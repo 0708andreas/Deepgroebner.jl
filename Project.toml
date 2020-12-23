@@ -3,6 +3,9 @@ uuid = "16dd1cdd-aea6-4f36-b58f-7f29b9f923a3"
 authors = ["andreas <andreas@lha66.dk> and contributors"]
 version = "0.1.0"
 
+[deps]
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+
 [compat]
 julia = "1"
 

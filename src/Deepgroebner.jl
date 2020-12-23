@@ -1,5 +1,7 @@
 module Deepgroebner
 
-# Write your package code here.
+include("groebner.jl")
+
+export LT, gt, term, |, div
 
 end

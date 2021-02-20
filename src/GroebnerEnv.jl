@@ -59,7 +59,7 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     env.P = [(env.G[i], env.G[j])
              for i in 1:length(env.G)
              for j in i:length(env.G)]
-    t = 0
+    env.t = 0
 end
 
 function buchberger_test(env::GroebnerEnv, model)
@@ -105,9 +105,10 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
     end
     env.reward = reward
     env.t = env.t + 1
-    if env.t > 1000
+    if env.t > 10_000
         env.done = true
         env.reward = -10_000
+        println("Stopped after 10_000 selections")
     end
 end
 

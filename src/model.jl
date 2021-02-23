@@ -140,6 +140,7 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
         
         loss
     end
+    # dump(gs)
     # println("Got to update!(Q, gs)")
     RLBase.update!(Q, gs)
 
@@ -160,13 +161,14 @@ function experiment(
     lg = TBLogger(log_dir, min_level = Logging.Info)
     rng = StableRNG(seed)
 
-    params = GroebnerEnvParams(4, 4, 2)
-    env = GroebnerEnv{4, StableRNG}(params,
-                      Array{Array{term{4},1},1}[],
-                      Array{NTuple{2, Array{term{4}, 1}}}[],
-                      0,
-                      false,
-                      rng)
+    params = GroebnerEnvParams(3, 4, 2)
+    env = GroebnerEnv{3, StableRNG}(params,
+                                    Array{Array{term{3},1},1}[],
+                                    Array{NTuple{2, Array{term{3}, 1}}}[],
+                                    0,
+                                    false,
+                                    0,
+                                    rng)
     RLBase.reset!(env)
     ns, na = length(state(env)), length(action_space(env))
     agent = Agent(
@@ -174,7 +176,7 @@ function experiment(
             learner = MyDQNLearner(
                 approximator = NeuralNetworkApproximator(
                     model = Replicate(x -> softmax(x; dims=2)[:], Chain(
-                        Dense(4*4, 10, relu; initW = glorot_uniform(rng)),
+                        Dense(4*3, 10, relu; initW = glorot_uniform(rng)),
                         Dense(10, 1, relu; initW = glorot_uniform(rng)),
                     )) |> cpu,
                     optimizer = ADAM(),
@@ -200,7 +202,7 @@ function experiment(
         ),
     )
 
-    stop_condition = StopAfterStep(1_000_000)
+    stop_condition = StopAfterStep(10_000_000)
 
     total_reward_per_episode = TotalRewardPerEpisode()
     time_per_step = TimePerStep()

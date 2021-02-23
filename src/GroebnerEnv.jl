@@ -31,6 +31,7 @@ mutable struct GroebnerEnv{N, R<:AbstractRNG} <: AbstractEnv
     P::Vector{NTuple{2, Array{term{N}, 1}}}
     reward::Int
     done::Bool
+    t::Int
     rng::R
 end
 
@@ -58,6 +59,7 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     env.P = [(env.G[i], env.G[j])
              for i in 1:length(env.G)
              for j in i:length(env.G)]
+    env.t = 0
 end
 
 function buchberger_test(env::GroebnerEnv, model)
@@ -102,6 +104,12 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
         env.done = true
     end
     env.reward = reward
+    env.t = env.t + 1
+    if env.t > 10_000
+        env.done = true
+        env.reward = -10_000
+        println("Stopped after 10_000 selections")
+    end
 end
 
 

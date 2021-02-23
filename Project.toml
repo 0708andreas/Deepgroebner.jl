@@ -21,6 +21,10 @@ Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
 ReinforcementLearningCore = "0.7"
+ReinforcementLearningEnvironments = "0.4"
+ReinforcementLearning = "0.8"
+TensorBoardLogger = "0.1"
+Zygote = "0.6"
 julia = "1"
 
 [extras]

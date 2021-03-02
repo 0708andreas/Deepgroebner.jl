@@ -9,7 +9,7 @@ using TensorBoardLogger
 using StableRNGs
 using Logging
 using Setfield
-
+using SliceMap
 
 include("GroebnerEnv.jl")
 
@@ -24,7 +24,9 @@ end
 # @functor Replicate
 Flux.trainable(m::Replicate) = Flux.trainable(m.model)
 
-(m::Replicate)(x::AbstractArray) = m.reducer(mapslices(m.model, x; dims=1))
+# (m::Replicate)(x::AbstractArray) = m.reducer(mapslices(m.model, x; dims=1))
+(m::Replicate)(x::AbstractArray) = m.reducer(slicemap(m.model, x; dims=1))
+# (m::Replicate)(x::AbstractArray) = m.reducer([m.model(c) for c in eachcol(x)])
 (m::Replicate)(xs::Vararg{<:AbstractArray}) = m.(xs)
 (m::Replicate)(xs::Tuple) = m(xs...)
 
@@ -60,6 +62,11 @@ end
     state |>
     x -> send_to_device(device(learner), x) |> learner.approximator |> send_to_host
 
+# (learner::MyDQNLearner)(env) =
+#     env |>
+#     state |>
+#     learner.approximator
+
 function MyDQNLearner(;
     approximator::Q,
     loss_func::F = huber_loss,
@@ -94,9 +101,9 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     end
     
 
-    s_ = s[2:end]
-    s = s[1:end-1]
-    a = a[1:end-1]
+    # s_ = s[2:end]
+    # s = s[1:end-1]
+    # a = a[1:end-1]
     # println("a = ", a)
 
     if length(s) == 0
@@ -105,31 +112,22 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     if ! t[end]
         return
     end
-   
+    # println(r[end])
+    # println(s[1])
     gs = gradient(params(Q)) do
-        # println("Computing loss")
-        # println("Sizes are:")
-        # println("  s: ", length(s))
-        # println("  s_: ", length(s_))
-        # println("  r: ", length(r))
-        # println("  a: ", length(a))
-        # # q = ((x, i) -> x[i]).(Q.(s), a)
-        # Qs = [Q(x) for x in s]
-        # q = [Qs[i][a[i]] for i in 1:length(Qs)]
-        # # q = getindex.(Q.(s), a)
-        # println("Computed q: size=", length(q))
-        # Qs_ = [Q(x) for x in s_]
-        # q_ = [maximum(x) for x in Qs_]
-        # println("Computed q_: size=", length(q_))
-        # G = r .+ γ .* (1 .- t) .* q_
-        # println("Copmuted G: size=", length(G))
-        # loss = loss_func(G, q)
-        # # loss = 1
-        # # Zygote.ignore() do
-        # #     learner.loss = loss
-        # # end
-        # println("Computed loss")
-        loss = sum(1*r)
+        q = [Q(s[i])[a[i]] for i in 1:(length(s))]
+        q_ = vcat([maximum(Q(s[i+1])) for i in 1:(length(s) - 1)], [r[end]])
+
+        # Zygote.ignore() do
+        #     println(q)
+        #     println(Q(s[1]))
+        #     println(q_)
+        # end
+        
+
+        # loss = Flux.huber_loss(q, q_)
+        loss = sum([abs(q[i] - q_[i]) for i in 1:length(q)])
+
         Zygote.ignore() do
             learner.loss = loss
             if any(t)
@@ -179,6 +177,10 @@ function experiment(
                         Dense(4*3, 10, relu; initW = glorot_uniform(rng)),
                         Dense(10, 1, relu; initW = glorot_uniform(rng)),
                     )) |> cpu,
+                    # model = Replicate(x -> [y[1] for y in x], Chain(
+                    #     Dense(4*3, 10, relu, initW = glorot_uniform(rng)),
+                    #     Dense(10, 1, relu, initW = glorot_uniform(rng))
+                    # )) |> gpu,
                     optimizer = ADAM(),
                 ),
                 batch_size = 32,
@@ -202,7 +204,7 @@ function experiment(
         ),
     )
 
-    stop_condition = StopAfterStep(10_000_000)
+    stop_condition = StopAfterStep(1_000)
 
     total_reward_per_episode = TotalRewardPerEpisode()
     time_per_step = TimePerStep()

@@ -99,7 +99,6 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     if length(r) == 0
         return
     end
-    
 
     # s_ = s[2:end]
     # s = s[1:end-1]
@@ -109,14 +108,15 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     if length(s) == 0
         return
     end
-    if ! t[end]
-        return
-    end
+    # if ! t[end]
+    #     return
+    # end
     # println(r[end])
     # println(s[1])
     gs = gradient(params(Q)) do
-        q = [Q(s[i])[a[i]] for i in 1:(length(s))]
-        q_ = vcat([maximum(Q(s[i+1])) for i in 1:(length(s) - 1)], [r[end]])
+        q = [Q(s[i])[a[i]] for i in 1:(length(s)-1)]
+        # q_ = vcat([r[i] + maximum(Q(s[i+1])) for i in 1:(length(s) - 1)], [r[end]])
+        q_ = [t[i] ? r[i] : r[i] + maximum(Q(s[i+1])) for i in 1:(length(s)-1)]
 
         # Zygote.ignore() do
         #     println(q)
@@ -140,6 +140,7 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     end
     # dump(gs)
     # println("Got to update!(Q, gs)")
+    # println(gs.grads)
     RLBase.update!(Q, gs)
 
 end
@@ -159,7 +160,7 @@ function experiment(
     lg = TBLogger(log_dir, min_level = Logging.Info)
     rng = StableRNG(seed)
 
-    params = GroebnerEnvParams(3, 4, 2)
+    params = GroebnerEnvParams(3, 4, 3)
     env = GroebnerEnv{3, StableRNG}(params,
                                     Array{Array{term{3},1},1}[],
                                     Array{NTuple{2, Array{term{3}, 1}}}[],
@@ -174,8 +175,8 @@ function experiment(
             learner = MyDQNLearner(
                 approximator = NeuralNetworkApproximator(
                     model = Replicate(x -> softmax(x; dims=2)[:], Chain(
-                        Dense(4*3, 10, relu; initW = glorot_uniform(rng)),
-                        Dense(10, 1, relu; initW = glorot_uniform(rng)),
+                        Dense(4*3, 64, relu; initW = glorot_uniform(rng)),
+                        Dense(64, 1, relu; initW = glorot_uniform(rng)),
                     )) |> cpu,
                     # model = Replicate(x -> [y[1] for y in x], Chain(
                     #     Dense(4*3, 10, relu, initW = glorot_uniform(rng)),
@@ -204,24 +205,24 @@ function experiment(
         ),
     )
 
-    stop_condition = StopAfterStep(1_000)
+    stop_condition = StopAfterEpisode(1_000)
 
     total_reward_per_episode = TotalRewardPerEpisode()
     time_per_step = TimePerStep()
     hook = ComposedHook(
         total_reward_per_episode,
         time_per_step,
-        DoEveryNStep() do t, agent, env
-            with_logger(lg) do
-                @info "training" loss = agent.policy.learner.loss
-            end
-        end,
-        DoEveryNEpisode() do t, agent, env
-            with_logger(lg) do
-                @info "training" reward = total_reward_per_episode.rewards[end] log_step_increment =
-                    0
-            end
-        end,
+        # DoEveryNStep() do t, agent, env
+        #     with_logger(lg) do
+        #         @info "training" loss = agent.policy.learner.loss
+        #     end
+        # end,
+        # DoEveryNEpisode() do t, agent, env
+        #     with_logger(lg) do
+        #         @info "training" reward = total_reward_per_episode.rewards[end] log_step_increment =
+        #             0
+        #     end
+        # end,
     )
 
     description = """

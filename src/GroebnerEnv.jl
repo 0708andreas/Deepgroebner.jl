@@ -5,7 +5,10 @@ using ReinforcementLearning
 include("groebner.jl")
 
 export GroebnerEnvParams,
-    GroebnerEnv
+    GroebnerEnv,
+    rand_env,
+    buchberger_test,
+    eval_model
 
 struct GroebnerEnvParams
     nvars::Int
@@ -34,6 +37,18 @@ mutable struct GroebnerEnv{N, R<:AbstractRNG} <: AbstractEnv
     t::Int
     rng::R
 end
+
+function rand_env(p::GroebnerEnvParams)
+    G = [[term(1., ntuple(x -> rand(1:p.maxdeg), p.nvars)),
+              term(1., ntuple(x -> rand(1:p.maxdeg), p.nvars))]
+             for _ in 1:p.npols]
+    P = [(G[i], G[j])
+             for i in 1:length(G)
+             for j in i:length(G)]
+    return GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
+end
+
+
 
 p(env::GroebnerEnv) = length(env.P)
 
@@ -79,6 +94,7 @@ function eval_model(env::GroebnerEnv, model)
     for i in 1:100
         RLBase.reset!(env)
         (i, r) = buchberger_test(env, model)
+        @assert is_groebner_basis(env.G)
         iters = iters + i
         reward = reward + r
     end
@@ -92,13 +108,13 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
     deleteat!(env.P, a)
     r, reward = mdiv_count(S(f, g), env.G)
     if length(r) == 1
-        append!(r, [term{N}(0, ntuple(x->0, N))])
+        append!(r, [term{N}(0.0, ntuple(x->0, N))])
     end
     
     reward = -1*(1 + reward) # +1 from S-poly construction
     if r != []
         env.P = update!(env.P, env.G, r)
-        env.G = append!(env.G, [r])
+        env.G = push!(env.G, r)
     end
     if length(env.P) == 0
         env.done = true
@@ -107,7 +123,7 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
     env.t = env.t + 1
     if env.t > 10_000
         env.done = true
-        env.reward = -10_000
+        env.reward = -1_000_000
         println("Stopped after 10_000 selections")
     end
 end

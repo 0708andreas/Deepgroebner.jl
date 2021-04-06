@@ -11,13 +11,16 @@ export term,
     LT,
     S,
     mdiv,
-    buchberger
+    buchberger,
+    is_groebner_basis
 
 # A term is a pair of coefficient (Float64) and exponent
 struct term{N}
     l :: Float64
     a :: NTuple{N, Int64}
 end
+
+binom(t :: term) = [t, term(0.0, ntuple(x->0, length(t.a)))]
 
 # Grevlex order
 # 
@@ -88,19 +91,69 @@ mdiv(h, F) = mdiv_count(h, F)[1]
 
 # Update function; TODO: refine this
 # BEWARE: mutation!!!
-update!(P, G, r) = append!(P, [(f, r) for f = G])
+# update!(P, G, r) = append!(P, [(f, r) for f in G])
+
+function update!(P, G, r)
+    m = length(G)
+    ltG = LT.(G)
+    ltr = LT(r)
+    function can_drop(p)
+        f, g = p
+        gam = lcm(LT(f), LT(g))
+        return (ltr | gam) && gam != lcm(LT(f), ltr) && gam != lcm(LT(g), ltr)
+    end
+    filter!(p -> !can_drop(p), P)
+
+    # println("filtered")
+    lcms = Dict{term, Vector{Vector{term}}}()
+    for f in G
+        if lcm(LT(f), ltr) in keys(lcms)
+            push!(lcms[lcm(LT(f), ltr)], f)
+        else
+            lcms[lcm(LT(f), ltr)] = [f]
+        end
+    end
+
+    # println("computed lcms")
+    # println(length(keys(lcms)))
+    min_lcms = []
+    P_ = []
+    for gam in sort(collect(keys(lcms)), lt = ((x, y) -> ! gt(x.a, y.a)))
+    # for gam in keys(lcms)
+        if all([! (gam | t) for t in min_lcms])
+            push!(min_lcms, gam)
+            if ! any([lcm(LT(t), ltr) == LT(t) * ltr for t in lcms[gam] ])
+                push!(P_, (lcms[gam][1], r))
+            end
+        end
+    end
+    append!(P, P_)
+end
+
 
 select!(P) = pop!(P)
 
 function buchberger(G)
     P = [(f, g) for f in G for g in G]
+    t = 0
     while length(P) > 0
+        # println("start")
         (f, g) = select!(P)
+        # println("selected")
         r = mdiv(S(f, g), G)
+        # println("division done")
         if r != []
             P = update!(P, G, r)
             G = append!(G, [r])
         end
+        t += 1
+        # println(t)
+        # println(length(P))
+
     end
     return G
+end
+
+function is_groebner_basis(G)
+    return all([mdiv(S(G[i], G[j]), G) == [] for i in 1:length(G) for j in i:length(G)])
 end

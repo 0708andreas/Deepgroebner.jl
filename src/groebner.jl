@@ -74,6 +74,7 @@ end
 function mdiv_count(h, F)
     r = h
     count = 0
+    sort!(F, lt = (x, y) -> ! gt(x[1].a, y[1].a))
     while r != [] && any(LT.(F) .| Ref(LT(r)))
         i = findfirst(LT.(F) .| Ref(LT(r)))
         f = F[i]

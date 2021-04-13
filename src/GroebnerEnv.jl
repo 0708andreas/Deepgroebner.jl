@@ -58,10 +58,10 @@ RLBase.state_space(env::GroebnerEnv) = MatrixSpace{Int}((p(env),
 RLBase.reward(env::GroebnerEnv) = env.reward
 RLBase.is_terminated(env::GroebnerEnv) = env.done
 RLBase.state(env::GroebnerEnv) = !env.done ?
-    hcat([vcat(vcat(collect.(getproperty.(f,:a))...),
-               vcat(collect.(getproperty.(g,:a))...)
-               )
-          for (f, g) in env.P]...) : Array{Int}(undef, 0, 0)
+    reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(f,:a))),
+                       reduce(vcat, collect.(getproperty.(g,:a)))
+                      )
+                  for (f, g) in env.P]) : Array{Int}(undef, 0, 0)
 
 
 function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
@@ -88,7 +88,7 @@ function buchberger_test(env::GroebnerEnv, model)
     return i, reward
 end
 
-function eval_model(env::GroebnerEnv, model)
+function eval_model(env::GroebnerEnv, model, gamma=1.0)
     iters = 0
     reward = 0
     for i in 1:100
@@ -96,7 +96,7 @@ function eval_model(env::GroebnerEnv, model)
         (i, r) = buchberger_test(env, model)
         @assert is_groebner_basis(env.G)
         iters = iters + i
-        reward = reward + r
+        reward = gamma*(reward + r)
     end
     return Base.:/(iters, 100), Base.:/(reward, 100)
 end

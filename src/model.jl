@@ -4,6 +4,7 @@ using ReinforcementLearningBase
 using ReinforcementLearningCore
 using ReinforcementLearningEnvironments
 using Zygote
+using Zygote: @adjoint
 using Dates
 using TensorBoardLogger
 using StableRNGs
@@ -13,8 +14,24 @@ using SliceMap
 
 include("GroebnerEnv.jl")
 
+
+# From https://github.com/FluxML/Zygote.jl/issues/317 in order to solve
+# MethodError: no method matching iterate(::Nothing)
+fixnothing(x) = x
+@adjoint fixnothing(x) = fixnothing(x), function(y)
+    if y === nothing || y isa AbstractArray{Nothing}
+        return (zero(x),)
+    else
+        return (y,)
+    end
+end
+
 export Replicate,
     experiment
+
+struct Batch{A}
+    b::A
+end
 
 struct Replicate{F, T}
     reducer::F
@@ -26,6 +43,7 @@ Flux.trainable(m::Replicate) = Flux.trainable(m.model)
 
 # (m::Replicate)(x::AbstractArray) = m.reducer(mapslices(m.model, x; dims=1))
 (m::Replicate)(x::AbstractArray) = m.reducer(slicemap(m.model, x; dims=1))
+(m::Replicate)(x::Batch{<:AbstractArray}) = m.(x.b)
 # (m::Replicate)(x::AbstractArray) = m.reducer([m.model(c) for c in eachcol(x)])
 (m::Replicate)(xs::Vararg{<:AbstractArray}) = m.(xs)
 (m::Replicate)(xs::Tuple) = m(xs...)
@@ -61,6 +79,8 @@ end
     env |>
     state |>
     x -> send_to_device(device(learner), x) |> learner.approximator |> send_to_host
+# (learner::MyDQNLearner)(env) =
+#     learner.approximator(state(env))
 
 # (learner::MyDQNLearner)(env) =
 #     env |>
@@ -96,18 +116,19 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     r = traj[:reward]
     t = traj[:terminal]
 
-    if length(r) == 0
+    send_to_device(device(Q), s)
+
+    if length(r) == 0 || length(s) == 0 || length(t) == 0 || length(a) == 0
         return
     end
+
+
 
     # s_ = s[2:end]
     # s = s[1:end-1]
     # a = a[1:end-1]
     # println("a = ", a)
 
-    if length(s) == 0
-        return
-    end
     # if ! t[end]
     #     return
     # end
@@ -115,8 +136,14 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     # println(s[1])
     gs = gradient(params(Q)) do
         q = [Q(s[i])[a[i]] for i in 1:(length(s)-1)]
+        # qs = [Q(s[i]) for i in 1:(length(s))]
+        # q = [qs[i][a[i]] for i in 1:(length(s)-1)]
         # q_ = vcat([r[i] + maximum(Q(s[i+1])) for i in 1:(length(s) - 1)], [r[end]])
-        q_ = [t[i] ? r[i] : r[i] + maximum(Q(s[i+1])) for i in 1:(length(s)-1)]
+        # q_ = [t[i] ? r[i] : r[i] + maximum(Q(s[i+1])) for i in 1:(length(s)-1)]
+        #
+        xyz = 2+2
+        qs = [(sort(Q(s[i])))[end] for i in 1:(length(s))]
+        q_ = [r[i] + (1 - t[i]) * qs[i+1] for i in 1:(length(s)-1)]
 
         # Zygote.ignore() do
         #     println(q)
@@ -126,7 +153,7 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
         
 
         # loss = Flux.huber_loss(q, q_)
-        loss = sum([abs(q[i] - q_[i]) for i in 1:length(q)])
+        loss = sum([(fixnothing(q[i] - q_[i]))^2 for i in 1:length(q)])
 
         Zygote.ignore() do
             learner.loss = loss
@@ -174,10 +201,11 @@ function experiment(
         policy = QBasedPolicy(
             learner = MyDQNLearner(
                 approximator = NeuralNetworkApproximator(
-                    model = Replicate(x -> softmax(x; dims=2)[:], Chain(
+                    # model = Replicate(x -> softmax(x; dims=2)[:], Chain(
+                    model = Replicate(x -> dropdims(x; dims=1), Chain(
                         Dense(4*3, 64, relu; initW = glorot_uniform(rng)),
                         Dense(64, 1, relu; initW = glorot_uniform(rng)),
-                    )) |> cpu,
+                    )) |> gpu ,
                     # model = Replicate(x -> [y[1] for y in x], Chain(
                     #     Dense(4*3, 10, relu, initW = glorot_uniform(rng)),
                     #     Dense(10, 1, relu, initW = glorot_uniform(rng))
@@ -205,7 +233,7 @@ function experiment(
         ),
     )
 
-    stop_condition = StopAfterEpisode(1_000)
+    stop_condition = StopAfterEpisode(1000)
 
     total_reward_per_episode = TotalRewardPerEpisode()
     time_per_step = TimePerStep()

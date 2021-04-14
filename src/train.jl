@@ -16,7 +16,7 @@ function train4()
 
     models = Array{Any, 1}(undef, length(experiments))
 
-    Threads.@threads for i in 1:length(experiments)
+     for i in 1:length(experiments)
         params, episodes = experiments[i]
         m = experiment(params, episodes)
         models[i] = m

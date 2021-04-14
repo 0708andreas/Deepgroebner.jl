@@ -267,3 +267,95 @@ end
 
 
 
+function experiment(
+    params :: GroebnerEnvParams,
+    episodes :: Int,
+    seed = 123,
+    save_dir = nothing,
+)
+    n = params.nvars
+    d = params.maxdeg
+    s = params.npols
+
+    if isnothing(save_dir)
+        t = Dates.format(now(), "yyyy_mm_dd_HH_MM_SS")
+        save_dir = joinpath(pwd(), "checkpoints", "JuliaRL_BasicDQN_CartPole_$(t)")
+    end
+    log_dir = joinpath(save_dir, "tb_log")
+    lg = TBLogger(log_dir, min_level = Logging.Info)
+    rng = StableRNG(seed)
+
+    env = GroebnerEnv{n, StableRNG}(params,
+                                    Array{Array{term{n},1},1}[],
+                                    Array{NTuple{2, Array{term{n}, 1}}}[],
+                                    0,
+                                    false,
+                                    0,
+                                    rng)
+    RLBase.reset!(env)
+    ns, na = length(state(env)), length(action_space(env))
+    agent = Agent(
+        policy = QBasedPolicy(
+            learner = MyDQNLearner(
+                approximator = NeuralNetworkApproximator(
+                    # model = Replicate(x -> softmax(x; dims=2)[:], Chain(
+                    model = Replicate(x -> dropdims(x; dims=1), Chain(
+                        Dense(4*n, 64, relu; initW = glorot_uniform(rng)),
+                        Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                    )) |> gpu ,
+                    # model = Replicate(x -> [y[1] for y in x], Chain(
+                    #     Dense(4*3, 10, relu, initW = glorot_uniform(rng)),
+                    #     Dense(10, 1, relu, initW = glorot_uniform(rng))
+                    # )) |> gpu,
+                    optimizer = ADAM(),
+                ),
+                batch_size = 32,
+                # batch_size = 1,
+                min_replay_history = 100,
+                loss_func = Flux.huber_loss,
+                rng = rng,
+            ),
+            explorer = EpsilonGreedyExplorer(
+                kind = :exp,
+                ϵ_stable = 0.01,
+                decay_steps = 500,
+                rng = rng,
+            ),
+        ),
+        trajectory = CircularVectorSARTTrajectory(
+            capacity = 1000,
+            # state = Array{Int, 2} => (),
+            state = Array{Int, 2},
+            # next_state = Array{Int, 2}
+        ),
+    )
+
+    stop_condition = StopAfterEpisode(1000)
+
+    total_reward_per_episode = TotalRewardPerEpisode()
+    time_per_step = TimePerStep()
+    hook = ComposedHook(
+        total_reward_per_episode,
+        time_per_step,
+        # DoEveryNStep() do t, agent, env
+        #     with_logger(lg) do
+        #         @info "training" loss = agent.policy.learner.loss
+        #     end
+        # end,
+        # DoEveryNEpisode() do t, agent, env
+        #     with_logger(lg) do
+        #         @info "training" reward = total_reward_per_episode.rewards[end] log_step_increment =
+        #             0
+        #     end
+        # end,
+    )
+
+    description = """
+    This experiment uses three dense layers to approximate the Q value.
+    The testing environment is CartPoleEnv.
+    You can view the runtime logs with `tensorboard --logdir $log_dir`.
+    Some useful statistics are stored in the `hook` field of this experiment.
+    """
+
+    Experiment(agent, env, stop_condition, hook, description)
+end

@@ -4,17 +4,17 @@ include("model.jl")
 
 export train
 
+models = Array{Any, 1}(undef, length(experiments))
 function train4()
     experiments = [
-        (GroebnerEnvParams(3 , 4 , 3 ), 1000),
-        (GroebnerEnvParams(3 , 20, 10), 1000),
-        (GroebnerEnvParams(10, 20, 10), 1000),
-        (GroebnerEnvParams(3 , 20, 10), 1000),
-        (GroebnerEnvParams(10, 20, 10), 1000),
+        (GroebnerEnvParams(3, 4 , 3 ), 1000),
+        (GroebnerEnvParams(3, 10, 4 ), 1000),
+        (GroebnerEnvParams(3, 10, 10), 1000),
+        (GroebnerEnvParams(3, 20, 4 ), 1000),
+        (GroebnerEnvParams(3, 20, 10), 1000),
 
     ]
 
-    models = Array{Any, 1}(undef, length(experiments))
 
      for i in 1:length(experiments)
         params, episodes = experiments[i]

@@ -11,6 +11,8 @@ using StableRNGs
 using Logging
 using Setfield
 using SliceMap
+using StatsBase
+using ElasticArrays
 
 include("GroebnerEnv.jl")
 
@@ -27,7 +29,12 @@ fixnothing(x) = x
 end
 
 export Replicate,
-    experiment
+    experiment,
+    pg_experiment,
+    strat_rand,
+    strat_real_first,
+    strat_normal,
+    strat_degree
 
 struct Batch{A}
     b::A
@@ -358,4 +365,297 @@ function experiment(
     """
 
     Experiment(agent, env, stop_condition, hook, description)
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function ElasticArrayTrajectory(; kwargs...)
+    Trajectory(map(kwargs.data) do x
+        ElasticArray{eltype(first(x))}(undef, last(x)..., 0)
+    end)
+end
+
+const SARTV = (:state, :action, :reward, :terminal, :value)
+const ElasticSARTVTrajectory = Trajectory{
+    <:NamedTuple{SARTV,<:Tuple{<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray}},
+}
+
+function ElasticSARTVTrajectory(;
+    state = Int => (),
+    action = Int => (),
+    reward = Float32 => (),
+    terminal = Bool => (),
+    value = Int => ()
+)
+    ElasticArrayTrajectory(;
+        state = state,
+        action = action,
+        reward = reward,
+        terminal = terminal,
+        value = value
+    )
+end
+
+function Base.length(t::ElasticSARTVTrajectory)
+    x = t[:terminal]
+    size(x, ndims(x))
+end
+
+
+Base.@kwdef mutable struct VPGPolicy{
+    A<:NeuralNetworkApproximator,
+    B<:Union{NeuralNetworkApproximator,Nothing},
+    R<:AbstractRNG,
+} <: AbstractPolicy
+    approximator::A
+    baseline::B = nothing
+    γ::Float32 = 0.99f0 # discount factor
+    α_θ = 1.0f0 # step size of policy
+    α_w = 1.0f0 # step size of baseline
+    batch_size::Int = 1024
+    rng::R = Random.GLOBAL_RNG
+    loss::Float32 = 0.0f0
+    baseline_loss::Float32 = 0.0f0
+end
+
+"""
+About continuous action space, see
+* [Diagonal Gaussian Policies](https://spinningup.openai.com/en/latest/spinningup/rl_intro.html#stochastic-policies
+* [Clipped Action Policy Gradient](https://arxiv.org/pdf/1802.07564.pdf)
+"""
+
+function (π::VPGPolicy)(env::AbstractEnv)
+    to_dev(x) = send_to_device(device(π.approximator), x)
+
+    logits = env |> state |> to_dev |> π.approximator
+
+    # dist = logits |> softmax |> π.dist
+    dist = logits |> softmax
+    w = Weights(dist)
+    # action = π.action_space[rand(π.rng, dist)]
+    # action = rand(π.rng, dist)
+    action = sample(1:length(w), w)
+    action
+end
+
+function (π::VPGPolicy)(env::MultiThreadEnv)
+    error("not implemented")
+    # TODO: can PG support multi env? PG only get updated at the end of an episode.
+end
+
+function RLBase.update!(
+    trajectory::ElasticSARTVTrajectory,
+    policy::VPGPolicy,
+    env::AbstractEnv,
+    ::PreActStage,
+    action,
+)
+    push!(trajectory[:state], state(env))
+    push!(trajectory[:action], action)
+
+    push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
+    # println(is_groebner_basis(env.G))
+end
+
+function RLBase.update!(
+    t::ElasticSARTVTrajectory,
+    ::VPGPolicy,
+    ::AbstractEnv,
+    ::PreEpisodeStage,
+)
+    empty!(t)
+end
+
+RLBase.update!(::VPGPolicy, ::ElasticSARTVTrajectory, ::AbstractEnv, ::PreActStage) = nothing
+
+function RLBase.update!(
+    π::VPGPolicy,
+    traj::ElasticSARTVTrajectory,
+    env::AbstractEnv,
+    ::PostEpisodeStage,
+)
+    model = π.approximator
+    to_dev(x) = send_to_device(device(model), x)
+
+    states = traj[:state]
+    actions = traj[:action] |> Array # need to convert ElasticArray to Array, or code will fail on gpu. `log_prob[CartesianIndex.(A, 1:length(A))`
+    gains = traj[:reward] |> x -> discount_rewards(x, π.γ)
+    values = traj[:value] |> Array
+
+    for idx in Iterators.partition(shuffle(1:length(traj[:terminal])), π.batch_size)
+        S = select_last_dim(states, idx) |> to_dev
+        A = actions[idx]
+        G = gains[idx] |> x -> Flux.unsqueeze(x, 1) |> to_dev
+        # gains is a 1 colomn array, but the ouput of flux model is 1 row, n_batch columns array. so unsqueeze it.
+
+
+        if π.baseline isa NeuralNetworkApproximator
+            gs = gradient(Flux.params(π.baseline)) do
+                δ = G .- [maximum(π.baseline(s)) for s in S]
+                loss = mean(δ .^ 2) * π.α_w # mse
+                Zygote.ignore() do
+                    π.baseline_loss = loss
+                end
+                loss
+            end
+            RLBase.update!(π.baseline, gs)
+        elseif π.baseline isa Nothing
+            # Normalization. See
+            # (http://rail.eecs.berkeley.edu/deeprlcourse-fa17/f17docs/hw2_final.pdf)
+            # (https://web.stanford.edu/class/cs234/assignment3/solution.pdf)
+            # normalise should not be used with baseline. or the loss of the policy will be too small.
+            δ = G |> x -> Flux.normalise(x, dims = 2)
+        end
+
+        push!(values, 0)
+        advantages = generalized_advantage_estimation(gains, values, 0.99, 0.97; terminal = traj[:terminal])
+
+        gs = gradient(Flux.params(model)) do
+            log_prob = [logsoftmax(model(s)) for s in S]
+            # log_probₐ = log_prob[CartesianIndex.(A, 1:length(A))]
+            log_probₐ = [log_prob[i][A[i]] for i in 1:length(A)]
+            # loss = -mean(log_probₐ .* δ) * π.α_θ
+            # loss = -sum(log_probₐ .* δ)
+            # loss = -1 * (sum(G) * sum(log_probₐ)) # sum(G) og ikke over delta, for så misser vi den absolutte størrelse af G da delta er normaliseret
+            # loss = -sum(log_probₐ .* G)
+            # loss = -sum(G)
+            loss = -mean(log_probₐ .* advantages)
+            Zygote.ignore() do
+                π.loss = loss
+                # println(G)
+                # println(log_probₐ .* δ)
+            end
+            loss
+        end
+        RLBase.update!(model, gs)
+    end
+end
+
+
+global_losses = Float32[]
+
+function pg_experiment(
+    params :: GroebnerEnvParams,
+    episodes :: Int,
+    gamma = 1.0f0,
+    save_dir = nothing,
+    seed = 123,
+)
+    if isnothing(save_dir)
+        t = Dates.format(now(), "yyyy_mm_dd_HH_MM_SS")
+        save_dir = joinpath(pwd(), "checkpoints", "JuliaRL_VPG_CartPole_$(t)")
+    end
+
+    lg = TBLogger(joinpath(save_dir, "tb_log"), min_level = Logging.Info)
+    rng = StableRNG(seed)
+
+    n = params.nvars
+    d = params.maxdeg
+    s = params.npols
+
+    env = GroebnerEnv{n, StableRNG}(params,
+                                    Array{Array{term{n},1},1}[],
+                                    Array{NTuple{2, Array{term{n}, 1}}}[],
+                                    0,
+                                    false,
+                                    0,
+                                    rng)
+
+    agent = Agent(
+        policy = VPGPolicy(
+            approximator = NeuralNetworkApproximator(
+                model = Replicate(x -> dropdims(x, dims=1), Chain(
+                # model = Chain(
+                    Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                )),
+                optimizer = ADAM(),
+            ) |> cpu,
+            baseline = NeuralNetworkApproximator(
+                model = Replicate(x -> dropdims(x, dims=1), Chain(
+                    Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                )),
+                optimizer = ADAM(),
+            ) |> cpu,
+            γ = gamma,
+            rng = rng,
+        ),
+        trajectory = ElasticSARTVTrajectory(state = Vector{Array{Int, 2}} => (),
+                                           reward = Int => ()),
+    )
+    # VPG is updated after each episode
+    stop_condition = StopAfterEpisode(episodes)
+
+    total_reward_per_episode = TotalRewardPerEpisode()
+    time_per_step = TimePerStep()
+    hook = ComposedHook(
+        total_reward_per_episode,
+        time_per_step,
+        DoEveryNEpisode() do t, agent, env
+            push!(global_losses, agent.policy.loss)
+        end
+        # DoEveryNEpisode() do t, agent, env
+        #     with_logger(lg) do
+        #         @info(
+        #             "training",
+        #             loss = agent.policy.loss,
+        #             baseline_loss = agent.policy.baseline_loss,
+        #             reward = total_reward_per_episode.rewards[end],
+        #         )
+        #     end
+        # end,
+    )
+
+    description = "# Play CartPole with VPG"
+
+    Experiment(agent, env, stop_condition, hook, description)
+end
+
+
+function strat_rand(env::GroebnerEnv)
+    return rand(1:length(env.P))
+end
+
+function strat_real_first(env::GroebnerEnv)
+    return 1
+end
+
+function strat_degree(env::GroebnerEnv)
+    function comp((f, g), (h, i))
+        lcm1 = lcm(LT(f), LT(g))
+        lcm2 = lcm(LT(h), LT(i))
+        return sum(lcm1.a) <= sum(lcm2.a)
+    end
+    return sort(env.P, lt=comp)[1]
+end
+
+
+function strat_normal(env::GroebnerEnv)
+    function comp(p1, p2)
+        f, g = p1
+        h, i = p2
+        lcm1 = lcm(LT(f), LT(g))
+        lcm2 = lcm(LT(h), LT(i))
+        println(lcm1)
+        println(lcm2)
+        return ! gt(lcm1, lcm2)
+    end
+    
+    P_ = sort(env.P, lt = comp )
+    return P_[1]
 end

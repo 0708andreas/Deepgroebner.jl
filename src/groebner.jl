@@ -1,4 +1,5 @@
 import Base.:*, Base.:>, Base.:<
+using AbstractAlgebra: GFElem
 
 export term,
     gt,
@@ -12,11 +13,14 @@ export term,
     S,
     mdiv,
     buchberger,
-    is_groebner_basis
+    is_groebner_basis,
+    tuples_lt
+
+/(x::AbstractAlgebra.GFElem{Int64}, y::AbstractAlgebra.GFElem{Int64}) = x * inv(y)
 
 # A term is a pair of coefficient (Float64) and exponent
 struct term{N}
-    l :: Float64
+    l :: GFElem{Int64}
     a :: NTuple{N, Int64}
 end
 
@@ -39,7 +43,7 @@ end
 # Term division
 (|)(t :: term, r :: term) = all(t.a .<= r.a) # Ja, std <=, ikke grevlex ;)
 div = (|)
-(/)(t :: term, r :: term) = term(Base.:/(t.l, r.l), t.a .- r.a)
+(/)(t :: term, r :: term) = term(/(t.l, r.l), t.a .- r.a)
 
 # Term lcm
 lcm(t :: term, r :: term) = term(one(t.l), max.(t.a, r.a))
@@ -53,6 +57,11 @@ minus(f, g) = let d = merge(+, Dict(x.a => x.l for x in f),
                               Dict(x.a => -1*x.l for x in g))
     [term(v, k) for (k, v) in d if v != 0]
 end
+add(f, g) = let d = merge(+, Dict(x.a => x.l for x in f),
+                          Dict(x.a => x.l for x in g))
+    [term(v, k) for (k, v) in d if v != 0]
+end
+
 
 
 # Leading term
@@ -72,17 +81,34 @@ end
 # Multivariate division
 
 function mdiv_count(h, F)
-    r = h
+    # r = h
+    # count = 0
+    # sort!(F, lt = (x, y) -> ! gt(x[1].a, y[1].a))
+    # while r != [] && any(LT.(F) .| Ref(LT(r)))
+    #     i = findfirst(LT.(F) .| Ref(LT(r)))
+    #     f = F[i]
+    #     r = minus(r, (LT(r)/LT(f))*f)
+    #     count = count + 1
+    #     # println(r)
+    # end
+    # return (r, count)
+
+    r = minus(h, h)
+
     count = 0
-    sort!(F, lt = (x, y) -> ! gt(x[1].a, y[1].a))
-    while r != [] && any(LT.(F) .| Ref(LT(r)))
-        i = findfirst(LT.(F) .| Ref(LT(r)))
-        f = F[i]
-        r = minus(r, (LT(r)/LT(f))*f)
-        count = count + 1
-        # println(r)
+    while length(h) != 0
+        if any(LT.(F) .| Ref(LT(h)))
+            i = findfirst(LT.(F) .| Ref(LT(h)))
+            f = F[i]
+            h = minus(h, (LT(h) / LT(f)) * f)
+            count = count + 1
+        else
+            r = add(r, [LT(h)])
+            h = minus(h, [LT(h)])
+        end
     end
-    return (r, count)
+    return (add(r, h), count)
+
 end
 
 mdiv(h, F) = mdiv_count(h, F)[1]
@@ -144,8 +170,8 @@ function buchberger(G)
         r = mdiv(S(f, g), G)
         # println("division done")
         if r != []
-            P = update!(P, G, r)
-            G = append!(G, [r])
+            update!(P, G, r)
+            append!(G, [r])
         end
         t += 1
         # println(t)
@@ -157,4 +183,20 @@ end
 
 function is_groebner_basis(G)
     return all([mdiv(S(G[i], G[j]), G) == [] for i in 1:length(G) for j in i:length(G)])
+end
+
+function tuples_lt(n, k)
+    if n == 0
+        return Vector{Int64}[Int64[]]
+    else
+        tups = []
+        for i in 0:k
+            recs = tuples_lt(n - 1, k - i)
+            for rec in recs
+                push!(rec, i)
+            end
+            append!(tups, recs)
+        end
+        return tups
+    end
 end

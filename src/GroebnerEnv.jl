@@ -1,6 +1,7 @@
 using Random
 using StableRNGs
 using ReinforcementLearning
+using AbstractAlgebra
 
 include("groebner.jl")
 
@@ -9,6 +10,9 @@ export GroebnerEnvParams,
     rand_env,
     buchberger_test,
     eval_model
+
+/(x::GFElem{Int64}, y::GFElem{Int64}) = x * inv(y)
+Field = GF(32003)
 
 struct GroebnerEnvParams
     nvars::Int
@@ -38,14 +42,28 @@ mutable struct GroebnerEnv{N, R<:AbstractRNG} <: AbstractEnv
     rng::R
 end
 
+function copy(e::GroebnerEnv)
+    return GroebnerEnv(e.params, deepcopy(e.G), deepcopy(e.P), e.reward, e.done, e.t, e.rng)
+end
+
+
 function rand_env(p::GroebnerEnvParams)
-    G = [[term(1., ntuple(x -> rand(1:p.maxdeg), p.nvars)),
-              term(1., ntuple(x -> rand(1:p.maxdeg), p.nvars))]
+    # G = [[term(1., ntuple(x -> rand(1:p.maxdeg), p.nvars)),
+    #           term(1., ntuple(x -> rand(1:p.maxdeg), p.nvars))]
+    #          for _ in 1:p.npols]
+    # P = [(G[i], G[j])
+    #          for i in 1:length(G)
+    #          for j in i:length(G)]
+    # return GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
+    G = [[term(Field(rand(1:32002)), ntuple(x -> rand(1:p.maxdeg), p.nvars)),
+              term(Field(rand(1:32002)), ntuple(x -> rand(1:p.maxdeg), p.nvars))]
              for _ in 1:p.npols]
     P = [(G[i], G[j])
              for i in 1:length(G)
              for j in i:length(G)]
-    return GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
+    env = GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
+    RLBase.reset!(env)
+    return env
 end
 
 
@@ -68,8 +86,19 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     env.done = false
     env.reward = 0
     # env.t = 0
-    env.G = [[term(1., ntuple(x -> rand(1:env.params.maxdeg), env.params.nvars)),
-              term(1., ntuple(x -> rand(1:env.params.maxdeg), env.params.nvars))]
+    # env.G = [[term(1., ntuple(x -> rand(1:env.params.maxdeg), env.params.nvars)),
+    #           term(1., ntuple(x -> rand(1:env.params.maxdeg), env.params.nvars))]
+    #          for _ in 1:env.params.npols]
+    # env.P = [(env.G[i], env.G[j])
+    #          for i in 1:length(env.G)
+    #          for j in i:length(env.G)]
+    # env.t = 0
+
+    degree = rand(1:env.params.maxdeg)
+    degrees = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+
+    env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees)...)),
+              term(Field(rand(1:32002)), tuple(rand(degrees)...))]
              for _ in 1:env.params.npols]
     env.P = [(env.G[i], env.G[j])
              for i in 1:length(env.G)
@@ -77,28 +106,30 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     env.t = 0
 end
 
-function buchberger_test(env::GroebnerEnv, model)
+function buchberger_test(env::GroebnerEnv, model, gamma = 1.0)
     i = 0
     reward = 0
     while length(env.P) > 0
-        env(model(state(env)))
+        env(model(env))
         i = i+1
         reward = reward + env.reward
     end
     return i, reward
 end
 
-function eval_model(env::GroebnerEnv, model, gamma=1.0)
-    iters = 0
+function eval_model(env::GroebnerEnv, model; iters = 100, gamma=1.0)
+    reductions = 0
     reward = 0
-    for i in 1:100
+    rewards::Vector{Float32} = []
+    for _ in 1:iters
         RLBase.reset!(env)
-        (i, r) = buchberger_test(env, model)
+        (i, r) = buchberger_test(env, model, gamma)
         @assert is_groebner_basis(env.G)
-        iters = iters + i
-        reward = gamma*(reward + r)
+        reductions = reductions + i
+        reward = reward + r
+        push!(rewards, r)
     end
-    return Base.:/(iters, 100), Base.:/(reward, 100)
+    return Base.:/(reductions, iters), Base.:/(reward, iters), rewards
 end
 
 
@@ -106,15 +137,17 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
     @assert a in 1:p(env)
     (f, g) = env.P[a]
     deleteat!(env.P, a)
+    f = filter(t -> t.l != 0, f)
+    g = filter(t -> t.l != 0, g)
     r, reward = mdiv_count(S(f, g), env.G)
     if length(r) == 1
-        append!(r, [term{N}(0.0, ntuple(x->0, N))])
+        append!(r, [term{N}(Field(0), ntuple(x->0, N))])
     end
     
     reward = -1*(1 + reward) # +1 from S-poly construction
     if r != []
-        env.P = update!(env.P, env.G, r)
-        env.G = push!(env.G, r)
+        update!(env.P, env.G, r)
+        push!(env.G, r)
     end
     if length(env.P) == 0
         env.done = true

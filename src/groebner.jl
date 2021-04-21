@@ -30,12 +30,16 @@ binom(t :: term) = [t, term(0.0, ntuple(x->0, length(t.a)))]
 # 
 # a > b if total (sum?) degree of a > b or,
 # if equal the last non-zero term of a - b is negative
+gt(a::term, b::term) = gt(a.a, b.a)
 function gt(a, b)
     if a == b                return false
     elseif (sum(a) > sum(b)) return true
     elseif (sum(a) < sum(b)) return false
     else   return filter(!=(0), a .- b)[end] < 0 end
 end
+
+gte(a::term, b::term) = a.a == b.a || gt(a, b)
+
 
 >(a :: term, b :: term) = gt(a.a, b.a) 
 <(a :: term, b :: term) = not(gt(a.a, b.a))

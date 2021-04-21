@@ -76,8 +76,8 @@ RLBase.state_space(env::GroebnerEnv) = MatrixSpace{Int}((p(env),
 RLBase.reward(env::GroebnerEnv) = env.reward
 RLBase.is_terminated(env::GroebnerEnv) = env.done
 RLBase.state(env::GroebnerEnv) = !env.done ?
-    reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(f,:a))),
-                       reduce(vcat, collect.(getproperty.(g,:a)))
+    reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(sort(f, lt=(x, y)->!gte(x, y)),:a))),
+                       reduce(vcat, collect.(getproperty.(sort(g, lt=(x, y)->!gte(x, y)),:a)))
                       )
                   for (f, g) in env.P]) : Array{Int}(undef, 0, 0)
 
@@ -94,11 +94,14 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     #          for j in i:length(env.G)]
     # env.t = 0
 
-    degree = rand(1:env.params.maxdeg)
-    degrees = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+    degree = rand(2:env.params.maxdeg)
+    deg1 = rand(1:(degree - 1))
+    deg2 = degree - deg1
+    degrees1 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+    degrees2 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
 
-    env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees)...)),
-              term(Field(rand(1:32002)), tuple(rand(degrees)...))]
+    env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
+              term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
              for _ in 1:env.params.npols]
     env.P = [(env.G[i], env.G[j])
              for i in 1:length(env.G)
@@ -159,6 +162,43 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
         env.reward = -1_000_000
         println("Stopped after 10_000 selections")
     end
+end
+
+
+
+mutable struct EasyEnv <: AbstractEnv
+    state :: Array{Array{Float32, 1}, 1}
+    reward::Float32
+    done::Bool
+    t::Int
+end
+
+
+RLBase.action_space(env::EasyEnv) = env.done ? ([1]) : (1:length(env.state))
+RLBase.state_space(env::EasyEnv) = [1, 2, 3]
+
+RLBase.reward(env::EasyEnv) = env.reward
+RLBase.is_terminated(env::EasyEnv) = env.done
+RLBase.state(env::EasyEnv) = hcat(env.state...)
+function RLBase.reset!(env::EasyEnv)
+    env.done = false
+    env.t = 0
+    n = rand(1:100)
+    env.state = Vector{Float32}[10*rand(20) for _ in 1:n]
+    env.reward = 0
+end
+
+function (env::EasyEnv)(a)
+    @assert a in 1:length(env.state)
+
+    env.reward = sum(env.state[a])
+
+    env.state = Vector{Float32}[10*rand(20) for _ in 1:(length(env.state) - 1)]
+
+    if length(env.state) == 0
+        env.done = true
+    end
+    env.t += 1
 end
 
 

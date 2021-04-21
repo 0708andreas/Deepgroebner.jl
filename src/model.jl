@@ -521,8 +521,8 @@ function RLBase.update!(
             δ = G |> x -> Flux.normalise(x, dims = 2)
         end
 
-        push!(values, 0)
-        advantages = generalized_advantage_estimation(gains, values, 0.99, 0.97; terminal = traj[:terminal])
+        # push!(values, 0)
+        # advantages = generalized_advantage_estimation(gains, values, 0.99, 0.97; terminal = traj[:terminal])
 
         gs = gradient(Flux.params(model)) do
             log_prob = [logsoftmax(model(s)) for s in S]
@@ -533,7 +533,7 @@ function RLBase.update!(
             # loss = -1 * (sum(G) * sum(log_probₐ)) # sum(G) og ikke over delta, for så misser vi den absolutte størrelse af G da delta er normaliseret
             # loss = -sum(log_probₐ .* G)
             # loss = -sum(G)
-            loss = -mean(log_probₐ .* advantages)
+            loss = -mean(log_probₐ .* δ)
             Zygote.ignore() do
                 π.loss = loss
                 # println(G)
@@ -595,8 +595,8 @@ function pg_experiment(
             γ = gamma,
             rng = rng,
         ),
-        trajectory = ElasticSARTVTrajectory(state = Vector{Array{Int, 2}} => (),
-                                           reward = Int => ()),
+        trajectory = ElasticSARTTrajectory(state = Vector{Array{Int, 2}} => ()),
+                                           # reward = Int => ()),
     )
     # VPG is updated after each episode
     stop_condition = StopAfterEpisode(episodes)
@@ -631,6 +631,16 @@ function strat_rand(env::GroebnerEnv)
     return rand(1:length(env.P))
 end
 
+function strat_first(env::GroebnerEnv)
+    function comp((f, g), (h, i))
+        p1 = (findfirst(Ref(f) .== env.G), findfirst(Ref(g) .== env,G))
+        p2 = (findfirst(Ref(h) .== env.G), findfirst(Ref(i) .== env.G))
+        p1 < p2
+    end
+    return sortperm(env.P; lt=comp)[1]
+end
+
+
 function strat_real_first(env::GroebnerEnv)
     return 1
 end
@@ -639,9 +649,9 @@ function strat_degree(env::GroebnerEnv)
     function comp((f, g), (h, i))
         lcm1 = lcm(LT(f), LT(g))
         lcm2 = lcm(LT(h), LT(i))
-        return sum(lcm1.a) <= sum(lcm2.a)
+        return sum(lcm1.a) < sum(lcm2.a)
     end
-    return sort(env.P, lt=comp)[1]
+    return sortperm(env.P, lt=comp)[1]
 end
 
 
@@ -651,11 +661,116 @@ function strat_normal(env::GroebnerEnv)
         h, i = p2
         lcm1 = lcm(LT(f), LT(g))
         lcm2 = lcm(LT(h), LT(i))
-        println(lcm1)
-        println(lcm2)
-        return ! gt(lcm1, lcm2)
+        return lcm1.a != lcm2.a && ! gt(lcm1.a, lcm2.a)
     end
     
-    P_ = sort(env.P, lt = comp )
-    return P_[1]
+    P_ = sortperm(env.P, lt = comp )[1]
+    return P_
+end
+
+function eval_strats()
+    params = [
+        (2, 3, 10),
+        (3, 3, 10),
+        (4, 3, 10),
+        (6, 3, 10),
+        (7, 3, 10),
+        (8, 3, 10),
+
+        (3, 10, 4),
+        (3, 10, 10)
+    ]
+
+    strats = [
+        strat_rand,
+        # strat_first,
+        strat_real_first,
+        strat_degree,
+        strat_normal
+    ]
+
+    results = []
+
+    for param in params
+        for strat in strats
+            env = rand_env(GroebnerEnvParams(param...))
+            res = eval_model(env, strat; iters=500)
+            push!(results, (res, param, strat))
+        end
+    end
+    return results
+end
+
+
+
+
+
+
+
+function easy_experiment(
+    episodes :: Int,
+    gamma = 1.0f0,
+    save_dir = nothing,
+    seed = 123,
+)
+    if isnothing(save_dir)
+        t = Dates.format(now(), "yyyy_mm_dd_HH_MM_SS")
+        save_dir = joinpath(pwd(), "checkpoints", "JuliaRL_VPG_CartPole_$(t)")
+    end
+
+    lg = TBLogger(joinpath(save_dir, "tb_log"), min_level = Logging.Info)
+    rng = StableRNG(seed)
+
+    env = EasyEnv([[1.0]], 0, false, 0)
+    RLBase.reset!(env)
+
+    agent = Agent(
+        policy = VPGPolicy(
+            approximator = NeuralNetworkApproximator(
+                model = Replicate(x -> dropdims(x, dims=1), Chain(
+                # model = Chain(
+                    Dense(20, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                )),
+                optimizer = ADAM(),
+            ) |> cpu,
+            baseline = NeuralNetworkApproximator(
+                model = Replicate(x -> dropdims(x, dims=1), Chain(
+                    Dense(20, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                )),
+                optimizer = ADAM(),
+            ) |> cpu,
+            γ = gamma,
+            rng = rng,
+        ),
+        trajectory = ElasticSARTTrajectory(state = Vector{Array{Float32, 2}} => (),
+                                           reward = Float32 => ()),
+    )
+    # VPG is updated after each episode
+    stop_condition = StopAfterEpisode(episodes)
+
+    total_reward_per_episode = TotalRewardPerEpisode()
+    time_per_step = TimePerStep()
+    hook = ComposedHook(
+        total_reward_per_episode,
+        time_per_step,
+        DoEveryNEpisode() do t, agent, env
+            push!(global_losses, agent.policy.loss)
+        end
+        # DoEveryNEpisode() do t, agent, env
+        #     with_logger(lg) do
+        #         @info(
+        #             "training",
+        #             loss = agent.policy.loss,
+        #             baseline_loss = agent.policy.baseline_loss,
+        #             reward = total_reward_per_episode.rewards[end],
+        #         )
+        #     end
+        # end,
+    )
+
+    description = "# Play CartPole with VPG"
+
+    Experiment(agent, env, stop_condition, hook, description)
 end

@@ -11,7 +11,7 @@ export GroebnerEnvParams,
     buchberger_test,
     eval_model
 
-/(x::GFElem{Int64}, y::GFElem{Int64}) = x * inv(y)
+# /(x::GFElem{Int64}, y::GFElem{Int64}) = x * inv(y)
 Field = GF(32003)
 
 struct GroebnerEnvParams
@@ -76,8 +76,8 @@ RLBase.state_space(env::GroebnerEnv) = MatrixSpace{Int}((p(env),
 RLBase.reward(env::GroebnerEnv) = env.reward
 RLBase.is_terminated(env::GroebnerEnv) = env.done
 RLBase.state(env::GroebnerEnv) = !env.done ?
-    reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(sort(f, lt=(x, y)->!gte(x, y)),:a))),
-                       reduce(vcat, collect.(getproperty.(sort(g, lt=(x, y)->!gte(x, y)),:a)))
+    reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(f,:a))),
+                       reduce(vcat, collect.(getproperty.(g,:a)))
                       )
                   for (f, g) in env.P]) : Array{Int}(undef, 0, 0)
 
@@ -103,9 +103,10 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
               term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
              for _ in 1:env.params.npols]
+    sort!.(env.G; lt = lt)
     env.P = [(env.G[i], env.G[j])
-             for i in 1:length(env.G)
-             for j in i:length(env.G)]
+             for i in     1:length(env.G)
+             for j in (i+1):length(env.G)]
     env.t = 0
 end
 
@@ -124,15 +125,24 @@ function eval_model(env::GroebnerEnv, model; iters = 100, gamma=1.0)
     reductions = 0
     reward = 0
     rewards::Vector{Float32} = []
+    sizes::Vector{Int64} = []
+    times::Vector{Float32} = []
+
+    RLBase.reset!(env)
+    buchberger_test(env, model, gamma)
     for _ in 1:iters
         RLBase.reset!(env)
-        (i, r) = buchberger_test(env, model, gamma)
+        stats = @timed buchberger_test(env, model, gamma)
+        (i, r) = stats.value
+        time = stats.time
         @assert is_groebner_basis(env.G)
         reductions = reductions + i
         reward = reward + r
         push!(rewards, r)
+        push!(sizes, length(env.G))
+        push!(times, time)
     end
-    return Base.:/(reductions, iters), Base.:/(reward, iters), rewards
+    return Base.:/(reductions, iters), Base.:/(reward, iters), 1000*Base.:/(sum(times), iters), rewards
 end
 
 
@@ -146,7 +156,9 @@ function (env::GroebnerEnv{N, R})(a) where {N, R}
     if length(r) == 1
         append!(r, [term{N}(Field(0), ntuple(x->0, N))])
     end
-    
+
+    sort!(r; lt = lt)
+
     reward = -1*(1 + reward) # +1 from S-poly construction
     if r != []
         update!(env.P, env.G, r)

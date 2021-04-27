@@ -383,37 +383,37 @@ end
 
 
 
-function ElasticArrayTrajectory(; kwargs...)
-    Trajectory(map(kwargs.data) do x
-        ElasticArray{eltype(first(x))}(undef, last(x)..., 0)
-    end)
-end
+# function ElasticArrayTrajectory(; kwargs...)
+#     Trajectory(map(kwargs.data) do x
+#         ElasticArray{eltype(first(x))}(undef, last(x)..., 0)
+#     end)
+# end
 
-const SARTV = (:state, :action, :reward, :terminal, :value)
-const ElasticSARTVTrajectory = Trajectory{
-    <:NamedTuple{SARTV,<:Tuple{<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray}},
-}
+# const SARTV = (:state, :action, :reward, :terminal, :value)
+# const ElasticSARTVTrajectory = Trajectory{
+#     <:NamedTuple{SARTV,<:Tuple{<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray}},
+# }
 
-function ElasticSARTVTrajectory(;
-    state = Int => (),
-    action = Int => (),
-    reward = Float32 => (),
-    terminal = Bool => (),
-    value = Int => ()
-)
-    ElasticArrayTrajectory(;
-        state = state,
-        action = action,
-        reward = reward,
-        terminal = terminal,
-        value = value
-    )
-end
+# function ElasticSARTVTrajectory(;
+#     state = Int => (),
+#     action = Int => (),
+#     reward = Float32 => (),
+#     terminal = Bool => (),
+#     value = Int => ()
+# )
+#     ElasticArrayTrajectory(;
+#         state = state,
+#         action = action,
+#         reward = reward,
+#         terminal = terminal,
+#         value = value
+#     )
+# end
 
-function Base.length(t::ElasticSARTVTrajectory)
-    x = t[:terminal]
-    size(x, ndims(x))
-end
+# function Base.length(t::ElasticSARTVTrajectory)
+#     x = t[:terminal]
+#     size(x, ndims(x))
+# end
 
 
 Base.@kwdef mutable struct VPGPolicy{
@@ -458,7 +458,7 @@ function (π::VPGPolicy)(env::MultiThreadEnv)
 end
 
 function RLBase.update!(
-    trajectory::ElasticSARTVTrajectory,
+    trajectory::ElasticSARTTrajectory,
     policy::VPGPolicy,
     env::AbstractEnv,
     ::PreActStage,
@@ -467,12 +467,12 @@ function RLBase.update!(
     push!(trajectory[:state], state(env))
     push!(trajectory[:action], action)
 
-    push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
+    # push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
     # println(is_groebner_basis(env.G))
 end
 
 function RLBase.update!(
-    t::ElasticSARTVTrajectory,
+    t::ElasticSARTTrajectory,
     ::VPGPolicy,
     ::AbstractEnv,
     ::PreEpisodeStage,
@@ -480,11 +480,11 @@ function RLBase.update!(
     empty!(t)
 end
 
-RLBase.update!(::VPGPolicy, ::ElasticSARTVTrajectory, ::AbstractEnv, ::PreActStage) = nothing
+RLBase.update!(::VPGPolicy, ::ElasticSARTTrajectory, ::AbstractEnv, ::PreActStage) = nothing
 
 function RLBase.update!(
     π::VPGPolicy,
-    traj::ElasticSARTVTrajectory,
+    traj::ElasticSARTTrajectory,
     env::AbstractEnv,
     ::PostEpisodeStage,
 )
@@ -494,7 +494,7 @@ function RLBase.update!(
     states = traj[:state]
     actions = traj[:action] |> Array # need to convert ElasticArray to Array, or code will fail on gpu. `log_prob[CartesianIndex.(A, 1:length(A))`
     gains = traj[:reward] |> x -> discount_rewards(x, π.γ)
-    values = traj[:value] |> Array
+    # values = traj[:value] |> Array
 
     for idx in Iterators.partition(shuffle(1:length(traj[:terminal])), π.batch_size)
         S = select_last_dim(states, idx) |> to_dev
@@ -528,12 +528,12 @@ function RLBase.update!(
             log_prob = [logsoftmax(model(s)) for s in S]
             # log_probₐ = log_prob[CartesianIndex.(A, 1:length(A))]
             log_probₐ = [log_prob[i][A[i]] for i in 1:length(A)]
-            # loss = -mean(log_probₐ .* δ) * π.α_θ
+            loss = -mean(log_probₐ .* δ) * π.α_θ
             # loss = -sum(log_probₐ .* δ)
             # loss = -1 * (sum(G) * sum(log_probₐ)) # sum(G) og ikke over delta, for så misser vi den absolutte størrelse af G da delta er normaliseret
             # loss = -sum(log_probₐ .* G)
             # loss = -sum(G)
-            loss = -mean(log_probₐ .* δ)
+            # loss = -mean(log_probₐ .* G)
             Zygote.ignore() do
                 π.loss = loss
                 # println(G)
@@ -585,13 +585,13 @@ function pg_experiment(
                 )),
                 optimizer = ADAM(),
             ) |> cpu,
-            baseline = NeuralNetworkApproximator(
-                model = Replicate(x -> dropdims(x, dims=1), Chain(
-                    Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
-                )),
-                optimizer = ADAM(),
-            ) |> cpu,
+            # baseline = NeuralNetworkApproximator(
+            #     model = Replicate(x -> dropdims(x, dims=1), Chain(
+            #         Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
+            #         Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+            #     )),
+            #     optimizer = ADAM(),
+            # ) |> cpu,
             γ = gamma,
             rng = rng,
         ),
@@ -606,9 +606,9 @@ function pg_experiment(
     hook = ComposedHook(
         total_reward_per_episode,
         time_per_step,
-        DoEveryNEpisode() do t, agent, env
-            push!(global_losses, agent.policy.loss)
-        end
+        # DoEveryNEpisode() do t, agent, env
+        #     push!(global_losses, agent.policy.loss)
+        # end
         # DoEveryNEpisode() do t, agent, env
         #     with_logger(lg) do
         #         @info(
@@ -633,7 +633,7 @@ end
 
 function strat_first(env::GroebnerEnv)
     function comp((f, g), (h, i))
-        p1 = (findfirst(Ref(f) .== env.G), findfirst(Ref(g) .== env,G))
+        p1 = (findfirst(Ref(f) .== env.G), findfirst(Ref(g) .== env.G))
         p2 = (findfirst(Ref(h) .== env.G), findfirst(Ref(i) .== env.G))
         p1 < p2
     end
@@ -654,6 +654,20 @@ function strat_degree(env::GroebnerEnv)
     return sortperm(env.P, lt=comp)[1]
 end
 
+function strat_truedeg(env::GroebnerEnv)
+    function comp((f, g), (h, i))
+        
+        return sum(sum.(getproperty.(S(f, g), :a))) < sum(sum.(getproperty.(S(h, i), :a)))
+    end
+    return sortperm(env.P, lt=comp)[1]
+end
+
+function strat_norm_or_queue(env::GroebnerEnv)
+    strat = rand([strat_real_first, strat_degree])
+    return strat(env)
+end
+
+
 
 function strat_normal(env::GroebnerEnv)
     function comp(p1, p2)
@@ -667,6 +681,7 @@ function strat_normal(env::GroebnerEnv)
     P_ = sortperm(env.P, lt = comp )[1]
     return P_
 end
+
 
 function eval_strats()
     params = [

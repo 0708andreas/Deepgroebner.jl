@@ -3,6 +3,8 @@ using AbstractAlgebra: GFElem
 
 export term,
     gt,
+    gte,
+    lt,
     |,
     /,
     div,
@@ -39,6 +41,7 @@ function gt(a, b)
 end
 
 gte(a::term, b::term) = a.a == b.a || gt(a, b)
+lt(a::term, b::term) = ! gte(a, b)
 
 
 >(a :: term, b :: term) = gt(a.a, b.a) 

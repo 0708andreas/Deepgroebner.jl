@@ -583,15 +583,15 @@ function pg_experiment(
                     Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
                     Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
                 )),
-                optimizer = ADAM(),
+                optimizer = ADAM(20^-4),
             ) |> cpu,
-            # baseline = NeuralNetworkApproximator(
-            #     model = Replicate(x -> dropdims(x, dims=1), Chain(
-            #         Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
-            #         Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
-            #     )),
-            #     optimizer = ADAM(),
-            # ) |> cpu,
+            baseline = NeuralNetworkApproximator(
+                model = Replicate(x -> dropdims(x, dims=1), Chain(
+                    Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                )),
+                optimizer = ADAM(20^-4),
+            ) |> cpu,
             γ = gamma,
             rng = rng,
         ),
@@ -606,9 +606,9 @@ function pg_experiment(
     hook = ComposedHook(
         total_reward_per_episode,
         time_per_step,
-        # DoEveryNEpisode() do t, agent, env
-        #     push!(global_losses, agent.policy.loss)
-        # end
+        DoEveryNEpisode() do t, agent, env
+            push!(global_losses, agent.policy.loss)
+        end
         # DoEveryNEpisode() do t, agent, env
         #     with_logger(lg) do
         #         @info(

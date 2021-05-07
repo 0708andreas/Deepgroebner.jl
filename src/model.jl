@@ -444,11 +444,11 @@ function (π::VPGPolicy)(env::AbstractEnv)
     logits = env |> state |> to_dev |> π.approximator
 
     # dist = logits |> softmax |> π.dist
-    dist = logits |> softmax
-    w = Weights(dist)
+    dist = softmax(logits; dims=2)
+    w = Weights(dropdims(dist; dims=1))
     # action = π.action_space[rand(π.rng, dist)]
     # action = rand(π.rng, dist)
-    action = sample(1:length(w), w)
+    action = sample(π.rng, 1:length(w), w)
     action
 end
 
@@ -488,8 +488,9 @@ function RLBase.update!(
     env::AbstractEnv,
     ::PostEpisodeStage,
 )
-    model = π.approximator
-    to_dev(x) = send_to_device(device(model), x)
+    local model = π.approximator
+    # to_dev(x) = send_to_device(device(model), x)
+    to_dev(x) = x
 
     states = traj[:state]
     actions = traj[:action] |> Array # need to convert ElasticArray to Array, or code will fail on gpu. `log_prob[CartesianIndex.(A, 1:length(A))`
@@ -525,7 +526,7 @@ function RLBase.update!(
         # advantages = generalized_advantage_estimation(gains, values, 0.99, 0.97; terminal = traj[:terminal])
 
         gs = gradient(Flux.params(model)) do
-            log_prob = [logsoftmax(model(s)) for s in S]
+            log_prob = [logsoftmax(model(s); dims=2) for s in S]
             # log_probₐ = log_prob[CartesianIndex.(A, 1:length(A))]
             log_probₐ = [log_prob[i][A[i]] for i in 1:length(A)]
             loss = -mean(log_probₐ .* δ) * π.α_θ
@@ -542,19 +543,20 @@ function RLBase.update!(
             loss
         end
         RLBase.update!(model, gs)
+        # println(π.loss)
+        # println(gs.grads)
+        # Flux.Optimise.update!(model.optimizer, Flux.params(model), gs)
     end
 end
 
 
 global_losses = Float32[]
 
-function pg_experiment(
-    params :: GroebnerEnvParams,
+function pg_experiment(  params :: GroebnerEnvParams,
     episodes :: Int,
-    gamma = 1.0f0,
+    gamma = 0.99f0,
     save_dir = nothing,
-    seed = 123,
-)
+    seed = 123)
     if isnothing(save_dir)
         t = Dates.format(now(), "yyyy_mm_dd_HH_MM_SS")
         save_dir = joinpath(pwd(), "checkpoints", "JuliaRL_VPG_CartPole_$(t)")
@@ -567,30 +569,40 @@ function pg_experiment(
     d = params.maxdeg
     s = params.npols
 
-    env = GroebnerEnv{n, StableRNG}(params,
-                                    Array{Array{term{n},1},1}[],
-                                    Array{NTuple{2, Array{term{n}, 1}}}[],
-                                    0,
-                                    false,
-                                    0,
-                                    rng)
+    # env = GroebnerEnv{n, StableRNG}(params,
+    #                                 Array{Array{term{n},1},1}[],
+    #                                 Array{NTuple{2, Array{term{n}, 1}}}[],
+    #                                 0,
+    #                                 false,
+    #                                 0,
+    #                                 rng)
+
+    env = rand_env(params)
 
     agent = Agent(
         policy = VPGPolicy(
             approximator = NeuralNetworkApproximator(
-                model = Replicate(x -> dropdims(x, dims=1), Chain(
-                # model = Chain(
+                # model = Replicate(x -> dropdims(x, dims=1), Chain(
+                # # model = Chain(
+                #     Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
+                #     Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
+                # )),
+                model = Chain(
                     Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
-                )),
-                optimizer = ADAM(20^-4),
+                    Dense(64, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1; initW = glorot_uniform(rng))
+                ),
+                optimizer = ADAM(),
+
             ) |> cpu,
             baseline = NeuralNetworkApproximator(
-                model = Replicate(x -> dropdims(x, dims=1), Chain(
+                # model = Replicate(x -> dropdims(x, dims=1), Chain(
+                model = Chain(
                     Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
-                )),
-                optimizer = ADAM(20^-4),
+                    Dense(64, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(64, 1; initW = glorot_uniform(rng)),
+                ),
+                optimizer = ADAM(),
             ) |> cpu,
             γ = gamma,
             rng = rng,
@@ -602,13 +614,14 @@ function pg_experiment(
     stop_condition = StopAfterEpisode(episodes)
 
     total_reward_per_episode = TotalRewardPerEpisode()
+    # total_loss_per_episode = TotalLoosPerEpisode()
     time_per_step = TimePerStep()
     hook = ComposedHook(
         total_reward_per_episode,
         time_per_step,
-        DoEveryNEpisode() do t, agent, env
-            push!(global_losses, agent.policy.loss)
-        end
+        # DoEveryNEpisode() do t, agent, env
+        #     push!(global_losses, agent.policy.loss)
+        # end
         # DoEveryNEpisode() do t, agent, env
         #     with_logger(lg) do
         #         @info(
@@ -621,7 +634,7 @@ function pg_experiment(
         # end,
     )
 
-    description = "# Play CartPole with VPG"
+    description = "# Make Gröbner bases with Policy Gradients"
 
     Experiment(agent, env, stop_condition, hook, description)
 end

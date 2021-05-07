@@ -14,10 +14,11 @@ export GroebnerEnvParams,
 # /(x::GFElem{Int64}, y::GFElem{Int64}) = x * inv(y)
 Field = GF(32003)
 
-struct GroebnerEnvParams
+mutable struct GroebnerEnvParams
     nvars::Int
     maxdeg::Int
     npols::Int
+    G
 end
 
 struct MatrixSpace{T}
@@ -55,15 +56,21 @@ function rand_env(p::GroebnerEnvParams)
     #          for i in 1:length(G)
     #          for j in i:length(G)]
     # return GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
-    G = [[term(Field(rand(1:32002)), ntuple(x -> rand(1:p.maxdeg), p.nvars)),
-              term(Field(rand(1:32002)), ntuple(x -> rand(1:p.maxdeg), p.nvars))]
+    degree = rand(2:p.maxdeg)
+    deg1 = rand(1:(degree - 1))
+    deg2 = degree - deg1
+    degrees1 = filter(x -> sum(x) != 0, tuples_lt(p.nvars, degree))
+    degrees2 = filter(x -> sum(x) != 0, tuples_lt(p.nvars, degree))
+
+    G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
+              term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
              for _ in 1:p.npols]
+    sort!.(G; lt = lt)
     P = [(G[i], G[j])
-             for i in 1:length(G)
-             for j in i:length(G)]
-    env = GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
-    RLBase.reset!(env)
-    return env
+             for i in     1:length(G)
+             for j in (i+1):length(G)]
+    p.G = Base.copy(G)
+    return GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
 end
 
 
@@ -94,31 +101,47 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     #          for j in i:length(env.G)]
     # env.t = 0
 
-    degree = rand(2:env.params.maxdeg)
-    deg1 = rand(1:(degree - 1))
-    deg2 = degree - deg1
-    degrees1 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
-    degrees2 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+    # degree = rand(2:env.params.maxdeg)
+    # deg1 = rand(1:(degree - 1))
+    # deg2 = degree - deg1
+    # degrees1 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+    # degrees2 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
 
-    env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
-              term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
-             for _ in 1:env.params.npols]
-    sort!.(env.G; lt = lt)
+    # env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
+    #           term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
+    #          for _ in 1:env.params.npols]
+    # sort!.(env.G; lt = lt)
+    # env.P = [(env.G[i], env.G[j])
+    #          for i in     1:length(env.G)
+    #          for j in (i+1):length(env.G)]
+    # env.t = 0
+
+    env.t = 0
+    env.reward = 0
+    env.done = false
+
+    env.G = Base.copy(env.params.G)
+    sort!.(env.G, lt=lt)
     env.P = [(env.G[i], env.G[j])
              for i in     1:length(env.G)
              for j in (i+1):length(env.G)]
-    env.t = 0
+    nothing
 end
 
 function buchberger_test(env::GroebnerEnv, model, gamma = 1.0)
     i = 0
     reward = 0
+    actions = Int64[]
+    rewards = Int64[]
     while length(env.P) > 0
-        env(model(env))
+        a = model(env)
+        push!(actions, a)
+        env(a)
         i = i+1
         reward = reward + env.reward
+        push!(rewards, env.reward)
     end
-    return i, reward
+    return i, reward, actions, rewards
 end
 
 function eval_model(env::GroebnerEnv, model; iters = 100, gamma=1.0)

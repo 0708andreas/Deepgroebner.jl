@@ -101,31 +101,31 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     #          for j in i:length(env.G)]
     # env.t = 0
 
-    # degree = rand(2:env.params.maxdeg)
-    # deg1 = rand(1:(degree - 1))
-    # deg2 = degree - deg1
-    # degrees1 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
-    # degrees2 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+    degree = rand(2:env.params.maxdeg)
+    deg1 = rand(1:(degree - 1))
+    deg2 = degree - deg1
+    degrees1 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
+    degrees2 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
 
-    # env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
-    #           term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
-    #          for _ in 1:env.params.npols]
-    # sort!.(env.G; lt = lt)
-    # env.P = [(env.G[i], env.G[j])
-    #          for i in     1:length(env.G)
-    #          for j in (i+1):length(env.G)]
-    # env.t = 0
-
-    env.t = 0
-    env.reward = 0
-    env.done = false
-
-    env.G = Base.copy(env.params.G)
-    sort!.(env.G, lt=lt)
+    env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
+              term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
+             for _ in 1:env.params.npols]
+    sort!.(env.G; lt = lt)
     env.P = [(env.G[i], env.G[j])
              for i in     1:length(env.G)
              for j in (i+1):length(env.G)]
-    nothing
+    env.t = 0
+
+    # env.t = 0
+    # env.reward = 0
+    # env.done = false
+
+    # env.G = Base.copy(env.params.G)
+    # sort!.(env.G, lt=lt)
+    # env.P = [(env.G[i], env.G[j])
+    #          for i in     1:length(env.G)
+    #          for j in (i+1):length(env.G)]
+    # nothing
 end
 
 function buchberger_test(env::GroebnerEnv, model, gamma = 1.0)

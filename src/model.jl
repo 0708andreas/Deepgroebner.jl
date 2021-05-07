@@ -553,7 +553,8 @@ end
 global_losses = Float32[]
 
 function pg_experiment(  params :: GroebnerEnvParams,
-    episodes :: Int,
+                         episodes :: Int,
+                         learn_rate = 10^-3,
     gamma = 0.99f0,
     save_dir = nothing,
     seed = 123)
@@ -592,7 +593,7 @@ function pg_experiment(  params :: GroebnerEnvParams,
                     Dense(64, 64, relu; initW = glorot_uniform(rng)),
                     Dense(64, 1; initW = glorot_uniform(rng))
                 ),
-                optimizer = ADAM(),
+                optimizer = ADAM(learn_rate),
 
             ) |> cpu,
             baseline = NeuralNetworkApproximator(
@@ -602,7 +603,7 @@ function pg_experiment(  params :: GroebnerEnvParams,
                     Dense(64, 64, relu; initW = glorot_uniform(rng)),
                     Dense(64, 1; initW = glorot_uniform(rng)),
                 ),
-                optimizer = ADAM(),
+                optimizer = ADAM(learn_rate),
             ) |> cpu,
             γ = gamma,
             rng = rng,

@@ -555,9 +555,10 @@ global_losses = Float32[]
 function pg_experiment(  params :: GroebnerEnvParams,
                          episodes :: Int,
                          learn_rate = 10^-3,
-    gamma = 0.99f0,
-    save_dir = nothing,
-    seed = 123)
+                         gamma = 0.99f0,
+                         save_dir = nothing,
+                         seed = 123;
+                         env = nothing)
     if isnothing(save_dir)
         t = Dates.format(now(), "yyyy_mm_dd_HH_MM_SS")
         save_dir = joinpath(pwd(), "checkpoints", "JuliaRL_VPG_CartPole_$(t)")
@@ -577,9 +578,10 @@ function pg_experiment(  params :: GroebnerEnvParams,
     #                                 false,
     #                                 0,
     #                                 rng)
-
-    env = rand_env(params)
-
+    if env == nothing
+        env = rand_env(params)
+    end
+    
     agent = Agent(
         policy = VPGPolicy(
             approximator = NeuralNetworkApproximator(
@@ -589,9 +591,9 @@ function pg_experiment(  params :: GroebnerEnvParams,
                 #     Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
                 # )),
                 model = Chain(
-                    Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 1; initW = glorot_uniform(rng))
+                    Dense(n*4, 128, relu; initW = glorot_uniform(rng)),
+                    # Dense(64, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(128, 1; initW = glorot_uniform(rng))
                 ),
                 optimizer = ADAM(learn_rate),
 
@@ -599,9 +601,9 @@ function pg_experiment(  params :: GroebnerEnvParams,
             baseline = NeuralNetworkApproximator(
                 # model = Replicate(x -> dropdims(x, dims=1), Chain(
                 model = Chain(
-                    Dense(n*4, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 64, relu; initW = glorot_uniform(rng)),
-                    Dense(64, 1; initW = glorot_uniform(rng)),
+                    Dense(n*4, 128, relu; initW = glorot_uniform(rng)),
+                    Dense(128, 128, relu; initW = glorot_uniform(rng)),
+                    Dense(128, 1; initW = glorot_uniform(rng)),
                 ),
                 optimizer = ADAM(learn_rate),
             ) |> cpu,

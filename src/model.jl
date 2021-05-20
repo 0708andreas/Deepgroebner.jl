@@ -383,37 +383,37 @@ end
 
 
 
-# function ElasticArrayTrajectory(; kwargs...)
-#     Trajectory(map(kwargs.data) do x
-#         ElasticArray{eltype(first(x))}(undef, last(x)..., 0)
-#     end)
-# end
+function ElasticArrayTrajectory(; kwargs...)
+    Trajectory(map(kwargs.data) do x
+        ElasticArray{eltype(first(x))}(undef, last(x)..., 0)
+    end)
+end
 
-# const SARTV = (:state, :action, :reward, :terminal, :value)
-# const ElasticSARTVTrajectory = Trajectory{
-#     <:NamedTuple{SARTV,<:Tuple{<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray}},
-# }
+const SARTV = (:state, :action, :reward, :terminal, :value)
+const ElasticSARTVTrajectory = Trajectory{
+    <:NamedTuple{SARTV,<:Tuple{<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray,<:ElasticArray}},
+}
 
-# function ElasticSARTVTrajectory(;
-#     state = Int => (),
-#     action = Int => (),
-#     reward = Float32 => (),
-#     terminal = Bool => (),
-#     value = Int => ()
-# )
-#     ElasticArrayTrajectory(;
-#         state = state,
-#         action = action,
-#         reward = reward,
-#         terminal = terminal,
-#         value = value
-#     )
-# end
+function ElasticSARTVTrajectory(;
+    state = Int => (),
+    action = Int => (),
+    reward = Float32 => (),
+    terminal = Bool => (),
+    value = Int => ()
+)
+    ElasticArrayTrajectory(;
+        state = state,
+        action = action,
+        reward = reward,
+        terminal = terminal,
+        value = value
+    )
+end
 
-# function Base.length(t::ElasticSARTVTrajectory)
-#     x = t[:terminal]
-#     size(x, ndims(x))
-# end
+function Base.length(t::ElasticSARTVTrajectory)
+    x = t[:terminal]
+    size(x, ndims(x))
+end
 
 
 Base.@kwdef mutable struct VPGPolicy{
@@ -458,7 +458,7 @@ function (π::VPGPolicy)(env::MultiThreadEnv)
 end
 
 function RLBase.update!(
-    trajectory::ElasticSARTTrajectory,
+    trajectory::ElasticSARTVTrajectory,
     policy::VPGPolicy,
     env::AbstractEnv,
     ::PreActStage,
@@ -467,12 +467,11 @@ function RLBase.update!(
     push!(trajectory[:state], state(env))
     push!(trajectory[:action], action)
 
-    # push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
-    # println(is_groebner_basis(env.G))
+    push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
 end
 
 function RLBase.update!(
-    t::ElasticSARTTrajectory,
+    t::ElasticSARTVTrajectory,
     ::VPGPolicy,
     ::AbstractEnv,
     ::PreEpisodeStage,
@@ -480,11 +479,11 @@ function RLBase.update!(
     empty!(t)
 end
 
-RLBase.update!(::VPGPolicy, ::ElasticSARTTrajectory, ::AbstractEnv, ::PreActStage) = nothing
+RLBase.update!(::VPGPolicy, ::ElasticSARTVTrajectory, ::AbstractEnv, ::PreActStage) = nothing
 
 function RLBase.update!(
     π::VPGPolicy,
-    traj::ElasticSARTTrajectory,
+    traj::ElasticSARTVTrajectory,
     env::AbstractEnv,
     ::PostEpisodeStage,
 )
@@ -495,7 +494,7 @@ function RLBase.update!(
     states = traj[:state]
     actions = traj[:action] |> Array # need to convert ElasticArray to Array, or code will fail on gpu. `log_prob[CartesianIndex.(A, 1:length(A))`
     gains = traj[:reward] |> x -> discount_rewards(x, π.γ)
-    # values = traj[:value] |> Array
+    values = traj[:value] |> Array
 
     for idx in Iterators.partition(shuffle(1:length(traj[:terminal])), π.batch_size)
         S = select_last_dim(states, idx) |> to_dev
@@ -506,7 +505,8 @@ function RLBase.update!(
 
         if π.baseline isa NeuralNetworkApproximator
             gs = gradient(Flux.params(π.baseline)) do
-                δ = G .- [maximum(π.baseline(s)) for s in S]
+                # δ = G .- [maximum(π.baseline(s)) for s in S]
+                δ = gains[idx] .- [maximum(π.baseline(s)) for s in S]
                 loss = mean(δ .^ 2) * π.α_w # mse
                 Zygote.ignore() do
                     π.baseline_loss = loss
@@ -522,14 +522,15 @@ function RLBase.update!(
             δ = G |> x -> Flux.normalise(x, dims = 2)
         end
 
-        # push!(values, 0)
-        # advantages = generalized_advantage_estimation(gains, values, 0.99, 0.97; terminal = traj[:terminal])
+        push!(values, 0)
+        advantages = generalized_advantage_estimation(gains[idx], vcat(values[idx], [0]), 0.99, 0.97; terminal = traj[:terminal])
 
         gs = gradient(Flux.params(model)) do
             log_prob = [logsoftmax(model(s); dims=2) for s in S]
             # log_probₐ = log_prob[CartesianIndex.(A, 1:length(A))]
             log_probₐ = [log_prob[i][A[i]] for i in 1:length(A)]
-            loss = -mean(log_probₐ .* δ) * π.α_θ
+            # loss = -mean(log_probₐ .* δ) * π.α_θ
+            loss = -mean(log_probₐ .* (gains[idx] .- advantages))
             # loss = -sum(log_probₐ .* δ)
             # loss = -1 * (sum(G) * sum(log_probₐ)) # sum(G) og ikke over delta, for så misser vi den absolutte størrelse af G da delta er normaliseret
             # loss = -sum(log_probₐ .* G)
@@ -602,7 +603,7 @@ function pg_experiment(  params :: GroebnerEnvParams,
                 # model = Replicate(x -> dropdims(x, dims=1), Chain(
                 model = Chain(
                     Dense(n*4, 128, relu; initW = glorot_uniform(rng)),
-                    Dense(128, 128, relu; initW = glorot_uniform(rng)),
+                    # Dense(128, 128, relu; initW = glorot_uniform(rng)),
                     Dense(128, 1; initW = glorot_uniform(rng)),
                 ),
                 optimizer = ADAM(learn_rate),
@@ -610,8 +611,8 @@ function pg_experiment(  params :: GroebnerEnvParams,
             γ = gamma,
             rng = rng,
         ),
-        trajectory = ElasticSARTTrajectory(state = Vector{Array{Int, 2}} => ()),
-                                           # reward = Int => ()),
+        trajectory = ElasticSARTVTrajectory(state = Vector{Array{Int, 2}} => (),
+                                            reward = Int => ()),
     )
     # VPG is updated after each episode
     stop_condition = StopAfterEpisode(episodes)

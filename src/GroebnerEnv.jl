@@ -12,7 +12,6 @@ export GroebnerEnvParams,
     eval_model
 
 # /(x::GFElem{Int64}, y::GFElem{Int64}) = x * inv(y)
-Field = GF(32003)
 
 mutable struct GroebnerEnvParams
     nvars::Int
@@ -62,15 +61,17 @@ function rand_env(p::GroebnerEnvParams)
     degrees1 = filter(x -> sum(x) != 0, tuples_lt(p.nvars, degree))
     degrees2 = filter(x -> sum(x) != 0, tuples_lt(p.nvars, degree))
 
-    G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
-              term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
+    G = [[term(Field(rand(1:1)), tuple(rand(degrees1)...)),
+              term(Field(rand(1:1)), tuple(rand(degrees2)...))]
              for _ in 1:p.npols]
     sort!.(G; lt = lt)
     P = [(G[i], G[j])
              for i in     1:length(G)
              for j in (i+1):length(G)]
     p.G = Base.copy(G)
-    return GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
+    env = GroebnerEnv(p, G, P, 0, false, 0, Random.GLOBAL_RNG)
+    RLBase.reset!(env)
+    return env
 end
 
 
@@ -82,12 +83,17 @@ RLBase.state_space(env::GroebnerEnv) = MatrixSpace{Int}((p(env),
                                                     4*env.params.nvars))
 RLBase.reward(env::GroebnerEnv) = env.reward
 RLBase.is_terminated(env::GroebnerEnv) = env.done
-RLBase.state(env::GroebnerEnv) = !env.done ?
-    reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(f,:a))),
-                       reduce(vcat, collect.(getproperty.(g,:a)))
-                      )
-                  for (f, g) in env.P]) : Array{Int}(undef, 0, 0)
+# RLBase.state(env::GroebnerEnv) = !env.done ?
+#     reduce(hcat, [vcat(reduce(vcat, collect.(getproperty.(f,:a))),
+#                        reduce(vcat, collect.(getproperty.(g,:a)))
+#                       )
+#                   for (f, g) in env.P]) : Array{Int}(undef, 0, 0)
 
+RLBase.state(env::GroebnerEnv) = !env.done ?
+    reduce(hcat, [S(f, g) == [] ? repeat([0], 2*env.params.nvars) :
+                                  reduce(vcat, collect.(getproperty.(binom(S(f, g)), :a)))
+                  for (f, g) in env.P]
+           ) : Array{Int}(undef, 0, 0)
 
 function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     env.done = false
@@ -107,8 +113,8 @@ function RLBase.reset!(env::GroebnerEnv{N, R}) where {N, R}
     degrees1 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
     degrees2 = filter(x -> sum(x) != 0, tuples_lt(env.params.nvars, degree))
 
-    env.G = [[term(Field(rand(1:32002)), tuple(rand(degrees1)...)),
-              term(Field(rand(1:32002)), tuple(rand(degrees2)...))]
+    env.G = [[term(Field(rand(1:1)), tuple(rand(degrees1)...)),
+              term(Field(rand(1:1)), tuple(rand(degrees2)...))]
              for _ in 1:env.params.npols]
     sort!.(env.G; lt = lt)
     env.P = [(env.G[i], env.G[j])

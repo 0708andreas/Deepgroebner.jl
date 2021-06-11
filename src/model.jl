@@ -85,7 +85,11 @@ end
 (learner::MyDQNLearner)(env) =
     env |>
     state |>
-    x -> send_to_device(device(learner), x) |> learner.approximator |> send_to_host
+    x -> send_to_device(device(learner), x) |>
+    learner.approximator |>
+    send_to_host |>
+    x -> dropdims(x; dims=1)
+
 # (learner::MyDQNLearner)(env) =
 #     learner.approximator(state(env))
 
@@ -118,7 +122,8 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     γ = learner.γ
     loss_func = learner.loss_func
 
-    s = traj[:state]
+    s = traj[:state][1:end-1]
+    ss = traj[:state][2:end]
     a = traj[:action]
     r = traj[:reward]
     t = traj[:terminal]
@@ -141,41 +146,48 @@ function RLBase.update!(learner::MyDQNLearner, traj::AbstractTrajectory)
     # end
     # println(r[end])
     # println(s[1])
-    gs = gradient(params(Q)) do
-        q = [Q(s[i])[a[i]] for i in 1:(length(s)-1)]
-        # qs = [Q(s[i]) for i in 1:(length(s))]
-        # q = [qs[i][a[i]] for i in 1:(length(s)-1)]
-        # q_ = vcat([r[i] + maximum(Q(s[i+1])) for i in 1:(length(s) - 1)], [r[end]])
-        # q_ = [t[i] ? r[i] : r[i] + maximum(Q(s[i+1])) for i in 1:(length(s)-1)]
-        #
-        xyz = 2+2
-        qs = [(sort(Q(s[i])))[end] for i in 1:(length(s))]
-        q_ = [r[i] + (1 - t[i]) * qs[i+1] for i in 1:(length(s)-1)]
 
-        # Zygote.ignore() do
-        #     println(q)
-        #     println(Q(s[1]))
-        #     println(q_)
-        # end
-        
+    for idx in Iterators.partition(shuffle(1:length(s)), 100)
+        S  = s[idx]
+        SS = ss[idx]
+        gs = gradient(params(Q)) do
+            # q = [Q(s[i])[a[i]] for i in 1:(length(s)-1)]
+            # qs = [Q(s[i]) for i in 1:(length(s))]
+            # q = [qs[i][a[i]] for i in 1:(length(s)-1)]
+            # q_ = vcat([r[i] + maximum(Q(s[i+1])) for i in 1:(length(s) - 1)], [r[end]])
+            # q_ = [t[i] ? r[i] : r[i] + maximum(Q(s[i+1])) for i in 1:(length(s)-1)]
+            #
+            q = [Q(s[i])[a[i]] for i in 1:length(S)]
+            q_ = r[idx] .+ (1 .- t[idx]) .* [maximum(Q(s_)) for s_ in SS]
+            # qs = [(sort(Q(s[i])))[end] for i in 1:(length(s))]
+            # q_ = [r[i] + (1 - t[i]) * qs[i+1] for i in 1:(length(s)-1)]
 
-        # loss = Flux.huber_loss(q, q_)
-        loss = sum([(fixnothing(q[i] - q_[i]))^2 for i in 1:length(q)])
+            # Zygote.ignore() do
+            #     println(q)
+            #     println(Q(s[1]))
+            #     println(q_)
+            # end
 
-        Zygote.ignore() do
-            learner.loss = loss
-            if any(t)
-                # println(findall(t))
+
+            # loss = Flux.huber_loss(q, q_)
+            # loss = sum([(fixnothing(q[i] - q_[i]))^2 for i in 1:length(q)])
+            loss = mean((q .- q_) .^ 2)
+
+            Zygote.ignore() do
+                learner.loss = loss
+                if any(t)
+                    # println(findall(t))
+                end
+
             end
 
+            loss
         end
-        
-        loss
+        RLBase.update!(Q, gs)
     end
     # dump(gs)
     # println("Got to update!(Q, gs)")
     # println(gs.grads)
-    RLBase.update!(Q, gs)
 
 end
 
@@ -194,25 +206,26 @@ function experiment(
     lg = TBLogger(log_dir, min_level = Logging.Info)
     rng = StableRNG(seed)
 
-    params = GroebnerEnvParams(3, 4, 3)
-    env = GroebnerEnv{3, StableRNG}(params,
-                                    Array{Array{term{3},1},1}[],
-                                    Array{NTuple{2, Array{term{3}, 1}}}[],
-                                    0,
-                                    false,
-                                    0,
-                                    rng)
-    RLBase.reset!(env)
+    params = GroebnerEnvParams(3, 4, 3, nothing)
+    # env = GroebnerEnv{3, StableRNG}(params,
+    #                                 Array{Array{term{3},1},1}[],
+    #                                 Array{NTuple{2, Array{term{3}, 1}}}[],
+    #                                 0,
+    #                                 false,
+    #                                 0,
+    #                                 rng)
+    env = rand_env(params)
+    # RLBase.reset!(env)
     ns, na = length(state(env)), length(action_space(env))
     agent = Agent(
         policy = QBasedPolicy(
             learner = MyDQNLearner(
                 approximator = NeuralNetworkApproximator(
                     # model = Replicate(x -> softmax(x; dims=2)[:], Chain(
-                    model = Replicate(x -> dropdims(x; dims=1), Chain(
+                    model = Chain(
                         Dense(4*3, 64, relu; initW = glorot_uniform(rng)),
                         Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
-                    )) |> gpu ,
+                    ) |> gpu ,
                     # model = Replicate(x -> [y[1] for y in x], Chain(
                     #     Dense(4*3, 10, relu, initW = glorot_uniform(rng)),
                     #     Dense(10, 1, relu, initW = glorot_uniform(rng))
@@ -432,11 +445,11 @@ Base.@kwdef mutable struct VPGPolicy{
     baseline_loss::Float32 = 0.0f0
 end
 
-"""
-About continuous action space, see
-* [Diagonal Gaussian Policies](https://spinningup.openai.com/en/latest/spinningup/rl_intro.html#stochastic-policies
-* [Clipped Action Policy Gradient](https://arxiv.org/pdf/1802.07564.pdf)
-"""
+
+
+
+
+
 
 function (π::VPGPolicy)(env::AbstractEnv)
     to_dev(x) = send_to_device(device(π.approximator), x)
@@ -458,7 +471,7 @@ function (π::VPGPolicy)(env::MultiThreadEnv)
 end
 
 function RLBase.update!(
-    trajectory::ElasticSARTVTrajectory,
+    trajectory::ElasticSARTTrajectory,
     policy::VPGPolicy,
     env::AbstractEnv,
     ::PreActStage,
@@ -467,11 +480,11 @@ function RLBase.update!(
     push!(trajectory[:state], state(env))
     push!(trajectory[:action], action)
 
-    push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
+    # push!(trajectory[:value], buchberger_test(copy(env), policy)[2])
 end
 
 function RLBase.update!(
-    t::ElasticSARTVTrajectory,
+    t::ElasticSARTTrajectory,
     ::VPGPolicy,
     ::AbstractEnv,
     ::PreEpisodeStage,
@@ -479,11 +492,11 @@ function RLBase.update!(
     empty!(t)
 end
 
-RLBase.update!(::VPGPolicy, ::ElasticSARTVTrajectory, ::AbstractEnv, ::PreActStage) = nothing
+RLBase.update!(::VPGPolicy, ::ElasticSARTTrajectory, ::AbstractEnv, ::PreActStage) = nothing
 
 function RLBase.update!(
     π::VPGPolicy,
-    traj::ElasticSARTVTrajectory,
+    traj::ElasticSARTTrajectory,
     env::AbstractEnv,
     ::PostEpisodeStage,
 )
@@ -492,9 +505,9 @@ function RLBase.update!(
     to_dev(x) = x
 
     states = traj[:state]
-    actions = traj[:action] |> Array # need to convert ElasticArray to Array, or code will fail on gpu. `log_prob[CartesianIndex.(A, 1:length(A))`
+    actions = traj[:action] |> Array # need to convert ElasticArray to Array, or code will fail on gpu.
     gains = traj[:reward] |> x -> discount_rewards(x, π.γ)
-    values = traj[:value] |> Array
+    # values = traj[:value] |> Array
 
     for idx in Iterators.partition(shuffle(1:length(traj[:terminal])), π.batch_size)
         S = select_last_dim(states, idx) |> to_dev
@@ -522,15 +535,15 @@ function RLBase.update!(
             δ = G |> x -> Flux.normalise(x, dims = 2)
         end
 
-        push!(values, 0)
-        advantages = generalized_advantage_estimation(gains[idx], vcat(values[idx], [0]), 0.99, 0.97; terminal = traj[:terminal])
+        # push!(values, 0)
+        # advantages = generalized_advantage_estimation(gains[idx], vcat(values[idx], [0]), 0.99, 0.97; terminal = traj[:terminal])
 
         gs = gradient(Flux.params(model)) do
             log_prob = [logsoftmax(model(s); dims=2) for s in S]
             # log_probₐ = log_prob[CartesianIndex.(A, 1:length(A))]
             log_probₐ = [log_prob[i][A[i]] for i in 1:length(A)]
-            # loss = -mean(log_probₐ .* δ) * π.α_θ
-            loss = -mean(log_probₐ .* (gains[idx] .- advantages))
+            loss = -mean(log_probₐ .* δ) * π.α_θ
+            # loss = -mean(log_probₐ .* (gains[idx] .- advantages))
             # loss = -sum(log_probₐ .* δ)
             # loss = -1 * (sum(G) * sum(log_probₐ)) # sum(G) og ikke over delta, for så misser vi den absolutte størrelse af G da delta er normaliseret
             # loss = -sum(log_probₐ .* G)
@@ -592,8 +605,8 @@ function pg_experiment(  params :: GroebnerEnvParams,
                 #     Dense(64, 1, x -> x; initW = glorot_uniform(rng)),
                 # )),
                 model = Chain(
-                    Dense(n*4, 128, relu; initW = glorot_uniform(rng)),
-                    # Dense(64, 64, relu; initW = glorot_uniform(rng)),
+                    Dense(n*2, 128, relu; initW = glorot_uniform(rng)),
+                    Dense(128, 128, relu; initW = glorot_uniform(rng)),
                     Dense(128, 1; initW = glorot_uniform(rng))
                 ),
                 optimizer = ADAM(learn_rate),
@@ -602,8 +615,8 @@ function pg_experiment(  params :: GroebnerEnvParams,
             baseline = NeuralNetworkApproximator(
                 # model = Replicate(x -> dropdims(x, dims=1), Chain(
                 model = Chain(
-                    Dense(n*4, 128, relu; initW = glorot_uniform(rng)),
-                    # Dense(128, 128, relu; initW = glorot_uniform(rng)),
+                    Dense(n*2, 128, relu; initW = glorot_uniform(rng)),
+                    Dense(128, 128, relu; initW = glorot_uniform(rng)),
                     Dense(128, 1; initW = glorot_uniform(rng)),
                 ),
                 optimizer = ADAM(learn_rate),
@@ -611,7 +624,7 @@ function pg_experiment(  params :: GroebnerEnvParams,
             γ = gamma,
             rng = rng,
         ),
-        trajectory = ElasticSARTVTrajectory(state = Vector{Array{Int, 2}} => (),
+        trajectory = ElasticSARTTrajectory(state = Vector{Array{Int, 2}} => (),
                                             reward = Int => ()),
     )
     # VPG is updated after each episode

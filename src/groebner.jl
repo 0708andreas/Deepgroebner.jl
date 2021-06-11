@@ -2,6 +2,8 @@ import Base.:*, Base.:>, Base.:<
 using AbstractAlgebra: GFElem
 
 export term,
+    Field,
+    binom,
     gt,
     gte,
     lt,
@@ -18,6 +20,7 @@ export term,
     is_groebner_basis,
     tuples_lt
 
+Field = GF(32003)
 /(x::AbstractAlgebra.GFElem{Int64}, y::AbstractAlgebra.GFElem{Int64}) = x * inv(y)
 
 # A term is a pair of coefficient (Float64) and exponent
@@ -26,7 +29,8 @@ struct term{N}
     a :: NTuple{N, Int64}
 end
 
-binom(t :: term) = [t, term(0.0, ntuple(x->0, length(t.a)))]
+binom(t :: term) = [t, term(Field(0), ntuple(x->0, length(t.a)))]
+binom(t :: Vector{term{N}}) where N = length(t) == 1 ? binom(t[1]) : t
 
 # Grevlex order
 # 
@@ -207,3 +211,13 @@ function tuples_lt(n, k)
         return tups
     end
 end
+
+
+# function poly(s, n)
+#     ss = split(replace(s, r"\w" => ""), "+")
+#     terms = match.(r"^(\d*)(.*)", ss)
+#     for term in terms
+        
+#     sss = [SubString.(term, findall(r"\d*x\d+(\^\d+)?", term)) for term in ss]
+
+# end
